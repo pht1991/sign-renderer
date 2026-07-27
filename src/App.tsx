@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { renderSignToCanvas, renderImageToCanvas } from './utils/renderSign'
+import { pdfFileToImage } from './utils/pdfToImage'
 import { PRESETS, type SignPreset } from './utils/svgToMesh'
 import { warpPerspective, type Point } from './utils/perspectiveWarp'
 import { compositeImage, downloadCanvas } from './utils/composite'
@@ -215,6 +216,12 @@ export default function App() {
     run.then((canvas) => {
       if (!cancelled) {
         setSignCanvas(canvas)
+        setIsRendering(false)
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setSignWarn('图片 / AI / EPS 加载失败，请换一张试试，或导出为 SVG 后上传')
+        setSignCanvas(null)
         setIsRendering(false)
       }
     })
@@ -527,9 +534,20 @@ export default function App() {
       setSignWarn('')
       setSignImageSrc(url)
     } else if (['ai', 'eps'].includes(ext) || type.includes('postscript')) {
-      setSignWarn(
-        'AI / EPS 文件浏览器无法直接解析，请在 Illustrator 或 Inkscape 中“导出为 SVG”后再上传',
-      )
+      // 现代 .ai 本质是 PDF 封装，用 pdf.js 渲染成位图走图片管线；
+      // 纯 PostScript 的 .eps 解析失败则由 catch 引导转 SVG
+      pdfFileToImage(file)
+        .then((img) => {
+          setSvgString('')
+          setImageAspect(null)
+          setSignWarn('')
+          setSignImageSrc(img.src) // PNG dataURL
+        })
+        .catch(() => {
+          setSignWarn(
+            'AI / EPS 解析失败：请在 Illustrator 或 Inkscape 中“导出为 SVG”后再上传',
+          )
+        })
     } else {
       setSignWarn('不支持的文件格式，请上传 SVG 矢量图或 PNG / JPG / WebP 图片')
     }
