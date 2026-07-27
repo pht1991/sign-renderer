@@ -37,18 +37,18 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   const scene = new THREE.Scene()
   scene.add(group)
 
-  // 正交相机：视锥精确匹配标识实际包围盒，仅留 2% 余量防裁切
+  // 正交相机：视锥精确匹配标识「平面尺寸」（xy），仅留 2% 余量防裁切。
+  // 注意：视锥只看 xy，不能把 z（厚度）算进去，否则大厚度会把标识缩成画布中央的小图。
   const bbox = new THREE.Box3().setFromObject(group)
   const bboxSize = new THREE.Vector3()
   bbox.getSize(bboxSize)
-  // 必须包含 z 轴（厚度方向），否则大厚度时视锥算小了会裁掉正面
-  const maxDim = Math.max(bboxSize.x, bboxSize.y, bboxSize.z, 0.001)
-  const halfSize = (maxDim / 2) * 1.02
-  // 相机必须位于标识正面之前：
+  const sizeXY = Math.max(bboxSize.x, bboxSize.y, 0.001)
+  const halfSize = sizeXY * 0.51 * 1.02
+  // 相机 z 位置必须位于标识「正面」之前：
   // 图片标识的贴图面在 +z（z = +depth/2），SVG 标识的图案 cap 在 z=0；
   // 若相机固定 z=10 而厚度较大（如默认 30），+z 面会落到相机背后被裁掉 → 图片看不见。
-  // 改为按包围盒动态后移，保证正面恒在相机前方。
-  const cameraZ = halfSize + 5
+  // 因此相机按厚度方向后移，保证正面恒在相机前方，且远小于视锥尺寸不影响平面缩放。
+  const cameraZ = bboxSize.z / 2 + 5
   const camera = new THREE.OrthographicCamera(
     -halfSize, halfSize, halfSize, -halfSize,
     0.1, cameraZ + halfSize + 10,
