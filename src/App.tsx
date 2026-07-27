@@ -66,6 +66,28 @@ function clamp(v: number, min: number, max: number): number {
 }
 
 /**
+ * 判断点是否落在标识四边形（凸多边形，四点按 TL/TR/BR/BL 顺序）内部。
+ * 用于区分「在标识上拖动 = 整体移动图层」与「在空白处拖动 = 平移视图」。
+ */
+function pointInQuad(
+  p: { x: number; y: number },
+  pts: [Point, Point, Point, Point],
+): boolean {
+  let sign = 0
+  for (let i = 0; i < 4; i++) {
+    const a = pts[i]
+    const b = pts[(i + 1) % 4]
+    const cross = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+    if (cross !== 0) {
+      const s = cross > 0 ? 1 : -1
+      if (sign === 0) sign = s
+      else if (s !== sign) return false
+    }
+  }
+  return true
+}
+
+/**
  * 在标识自身坐标系内生成对齐网格：随标识一起透视 warp，网格即与标识内容完全对齐。
  * 用于开关打开时检查标识内容在四点框内是否端正、居中。
  */
@@ -171,6 +193,8 @@ export default function App() {
   const [photoDrag, setPhotoDrag] = useState(false)
   const [signDrag, setSignDrag] = useState(false)
   const [photoWarn, setPhotoWarn] = useState('')
+  // 指针是否悬停在标识四边形内（用于显示 move 光标，提示可整体拖动）
+  const [overQuad, setOverQuad] = useState(false)
 
   const photoRef = useRef<HTMLImageElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
@@ -178,6 +202,11 @@ export default function App() {
   const innerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState>(null)
   const signGridRef = useRef<HTMLCanvasElement | null>(null)
+  // 整体移动图层状态：按下时记录起始图像坐标与原始四点快照，移动时整体平移
+  const layerMoveRef = useRef<{
+    startImg: { x: number; y: number }
+    origPoints: [Point, Point, Point, Point]
+  } | null>(null)
 
   // 视图变换（缩放 + 平移），仅用于视觉呈现；指针→图像坐标统一用 inner 实际包围盒换算
   const [view, setView] = useState<{ zoom: number; panX: number; panY: number }>({
@@ -472,9 +501,17 @@ export default function App() {
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
     stage.setPointerCapture(e.pointerId)
     if (pointersRef.current.size === 1) {
+      // 在标识四边形内按下 → 整体移动图层；否则平移视图
+      const m = screenToImage(e.clientX, e.clientY)
+      if (pointInQuad(m, points)) {
+        layerMoveRef.current = { startImg: m, origPoints: points }
+        pinchStartRef.current = null
+        return
+      }
       panStartRef.current = { x: e.clientX, y: e.clientY, panX: view.panX, panY: view.panY }
       pinchStartRef.current = null
     } else if (pointersRef.current.size === 2) {
+      layerMoveRef.current = null
       const pts = [...pointersRef.current.values()]
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
       const midX = (pts[0].x + pts[1].x) / 2
@@ -498,6 +535,30 @@ export default function App() {
   const onStagePointerMove = (e: React.PointerEvent) => {
     if (!pointersRef.current.has(e.pointerId)) return
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    // 整体移动标识图层：把原始四点快照整体平移，形状不变，且夹在画面内不丢失
+    if (layerMoveRef.current) {
+      const lm = layerMoveRef.current
+      const cur = screenToImage(e.clientX, e.clientY)
+      const dx = cur.x - lm.startImg.x
+      const dy = cur.y - lm.startImg.y
+      const xs = lm.origPoints.map((p) => p.x)
+      const ys = lm.origPoints.map((p) => p.y)
+      const minX = Math.min(...xs)
+      const maxX = Math.max(...xs)
+      const minY = Math.min(...ys)
+      const maxY = Math.max(...ys)
+      const dxC = clamp(dx, -minX, displaySize.w - maxX)
+      const dyC = clamp(dy, -minY, displaySize.h - maxY)
+      setPoints(
+        lm.origPoints.map((p) => ({ x: p.x + dxC, y: p.y + dyC })) as [
+          Point,
+          Point,
+          Point,
+          Point,
+        ],
+      )
+      return
+    }
     if (pinchStartRef.current && pointersRef.current.size >= 2) {
       const pts = [...pointersRef.current.values()]
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
@@ -519,6 +580,12 @@ export default function App() {
         panY: panStartRef.current!.panY + dy,
       }))
     }
+    // hover 反馈：在标识区域内显示 move 光标，提示可整体拖动
+    if (!layerMoveRef.current && !panStartRef.current && pointersRef.current.size <= 1) {
+      const m = screenToImage(e.clientX, e.clientY)
+      const inside = pointInQuad(m, points)
+      setOverQuad((prev) => (prev === inside ? prev : inside))
+    }
   }
 
   const onStagePointerUp = (e: React.PointerEvent) => {
@@ -528,6 +595,7 @@ export default function App() {
     } catch {
       // ignore
     }
+    layerMoveRef.current = null
     if (pointersRef.current.size < 2) pinchStartRef.current = null
     if (pointersRef.current.size === 0) panStartRef.current = null
   }
@@ -714,6 +782,7 @@ export default function App() {
             <div
               className={`photo-stage${photoDrag ? ' drag-active' : ''}`}
               ref={stageRef}
+              style={{ cursor: overQuad ? 'move' : 'grab' }}
               onPointerDown={onStagePointerDown}
               onPointerMove={onStagePointerMove}
               onPointerUp={onStagePointerUp}
@@ -917,7 +986,7 @@ export default function App() {
                 </div>
               ))}
             </div>
-            <p className="hint">拖动四个角点对齐标识位置；在画面空白处拖拽可平移，滚轮 / 双指捏合可缩放查看细节</p>
+            <p className="hint">拖动四个角点对齐形状；在标识区域内拖拽可整体移动图层，在画面空白处拖拽平移视图，滚轮 / 双指捏合缩放查看细节</p>
           </section>
 
           <section className="panel-section">
