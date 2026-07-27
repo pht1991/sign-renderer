@@ -1,9 +1,3 @@
-import * as pdfjsLib from 'pdfjs-dist'
-import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-
-// 配置 pdf.js Web Worker（Vite 通过 ?url 注入 worker 文件地址）
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
-
 /**
  * 将 AI / EPS / PDF 文件渲染成位图图片（HTMLImageElement）。
  *
@@ -13,6 +7,11 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
  * 渲染结果转成 PNG dataURL 的 HTMLImageElement，直接复用图片标识渲染管线（renderImageToCanvas）。
  */
 export async function pdfFileToImage(file: File, maxSize = 1024): Promise<HTMLImageElement> {
+  // pdf.js 体积较大（~500KB+），按需动态加载，避免拖慢首屏
+  const pdfjsLib = await import('pdfjs-dist')
+  const workerMod = await import('pdfjs-dist/build/pdf.worker.min.mjs?url')
+  pdfjsLib.GlobalWorkerOptions.workerSrc = workerMod.default
+
   const buf = await file.arrayBuffer()
   const loadingTask = pdfjsLib.getDocument({ data: buf })
   const doc = await loadingTask.promise

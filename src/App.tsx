@@ -29,6 +29,34 @@ function getSvgAspectRatio(svgString: string): number | null {
   return null
 }
 
+/**
+ * 校验 SVG 字符串是否可被解析并包含可见内容。
+ * 返回 null 表示通过；返回字符串表示错误原因（用于给用户提示）。
+ * 两层防护：1) 上传前就拦掉非法/空 SVG；2) 配合渲染阶段 catch 兜底。
+ */
+function validateSvg(svgString: string): string | null {
+  if (!svgString || !svgString.trim().toLowerCase().includes('<svg')) {
+    return '文件内容不是有效的 SVG（缺少 <svg> 根元素）'
+  }
+  try {
+    const doc = new DOMParser().parseFromString(svgString, 'image/svg+xml')
+    if (doc.getElementsByTagName('parsererror').length > 0) {
+      return 'SVG 解析失败：文件可能存在 XML 语法错误，请检查后重试'
+    }
+    const svg = doc.querySelector('svg')
+    if (!svg) return '未找到 <svg> 根元素，请确认文件为 SVG 格式'
+    const hasContent = svg.querySelector(
+      'path, rect, circle, ellipse, line, polyline, polygon, text, image, g',
+    )
+    if (!hasContent) {
+      return 'SVG 中未找到可渲染的图形（path / rect / circle / text 等），请检查内容'
+    }
+    return null
+  } catch {
+    return 'SVG 解析失败，请确认文件内容正确'
+  }
+}
+
 // 视图缩放范围
 const MIN_ZOOM = 0.1
 const MAX_ZOOM = 8
@@ -139,6 +167,10 @@ export default function App() {
   const [photoLoaded, setPhotoLoaded] = useState(false)
   const [showGrid, setShowGrid] = useState(false)
   const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+  // 拖拽上传高亮状态（照片区 / 标识区分别指示）
+  const [photoDrag, setPhotoDrag] = useState(false)
+  const [signDrag, setSignDrag] = useState(false)
+  const [photoWarn, setPhotoWarn] = useState('')
 
   const photoRef = useRef<HTMLImageElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
@@ -220,7 +252,11 @@ export default function App() {
       }
     }).catch(() => {
       if (!cancelled) {
-        setSignWarn('图片 / AI / EPS 加载失败，请换一张试试，或导出为 SVG 后上传')
+        // 区分输入类型给出针对性提示：SVG 与图片/AI/EPS 的失败原因不同
+        const msg = svgString
+          ? 'SVG 渲染失败，可能包含当前不支持的元素，建议导出为精简 SVG 后重试'
+          : '图片 / AI / EPS 加载失败，请换一张试试，或导出为 SVG 后上传'
+        setSignWarn(msg)
         setSignCanvas(null)
         setIsRendering(false)
       }
@@ -502,26 +538,37 @@ export default function App() {
   }
 
   // === 5. 文件上传处理 ===
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+  const processPhotoFile = (file: File) => {
     const url = URL.createObjectURL(file)
     setPhotoUrl(url)
     setPhotoLoaded(false)
+    setPhotoWarn('')
   }
 
-  const handleSignUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file) return
+    if (file) processPhotoFile(file)
+  }
+
+  const processSignFile = (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
     const type = file.type
     if (ext === 'svg' || type.includes('svg')) {
       const reader = new FileReader()
       reader.onload = () => {
+        const text = reader.result as string
+        const err = validateSvg(text)
+        if (err) {
+          setSignImageSrc('')
+          setImageAspect(null)
+          setSvgString('')
+          setSignWarn(err)
+          return
+        }
         setSignImageSrc('')
         setImageAspect(null)
         setSignWarn('')
-        setSvgString(reader.result as string)
+        setSvgString(text)
       }
       reader.readAsText(file)
     } else if (
@@ -551,6 +598,54 @@ export default function App() {
     } else {
       setSignWarn('不支持的文件格式，请上传 SVG 矢量图或 PNG / JPG / WebP 图片')
     }
+  }
+
+  const handleSignUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) processSignFile(file)
+  }
+
+  // 照片拖拽：接受图片文件（非矢量），矢量引导到右侧标识区
+  const onPhotoDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setPhotoDrag(false)
+    const file = e.dataTransfer.files?.[0]
+    if (!file) return
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+    const isVector = ['svg', 'ai', 'eps'].includes(ext) || file.type.includes('svg')
+    if (isVector) {
+      setPhotoWarn('矢量文件（SVG / AI / EPS）请在右侧「广告标识」区上传')
+      return
+    }
+    processPhotoFile(file)
+  }
+
+  const onPhotoDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    setPhotoDrag(true)
+  }
+
+  const onPhotoDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    if (e.currentTarget === e.target) setPhotoDrag(false)
+  }
+
+  // 标识拖拽：接受任意标识文件，复用 processSignFile 统一分流
+  const onSignDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setSignDrag(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file) processSignFile(file)
+  }
+
+  const onSignDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    setSignDrag(true)
+  }
+
+  const onSignDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    if (e.currentTarget === e.target) setSignDrag(false)
   }
 
   const loadSampleSvg = () => {
@@ -601,21 +696,31 @@ export default function App() {
         {/* 左侧：照片 + 标记 + 预览 */}
         <div className="canvas-area">
           {!photoUrl ? (
-            <div className="upload-zone">
+            <div
+              className={`upload-zone${photoDrag ? ' drag-active' : ''}`}
+              onDragOver={onPhotoDragOver}
+              onDragLeave={onPhotoDragLeave}
+              onDrop={onPhotoDrop}
+            >
               <p>上传建筑外立面照片</p>
+              <p className="drag-hint">或将照片拖拽到此处</p>
               <label className="upload-btn">
                 选择照片
                 <input type="file" accept="image/*" onChange={handlePhotoUpload} hidden />
               </label>
+              {photoWarn && <p className="status-warn">{photoWarn}</p>}
             </div>
           ) : (
             <div
-              className="photo-stage"
+              className={`photo-stage${photoDrag ? ' drag-active' : ''}`}
               ref={stageRef}
               onPointerDown={onStagePointerDown}
               onPointerMove={onStagePointerMove}
               onPointerUp={onStagePointerUp}
               onPointerCancel={onStagePointerUp}
+              onDragOver={onPhotoDragOver}
+              onDragLeave={onPhotoDragLeave}
+              onDrop={onPhotoDrop}
             >
               <div className="stage-toolbar">
                 <button
@@ -625,6 +730,7 @@ export default function App() {
                 >
                   重置视图
                 </button>
+                {photoWarn && <p className="status-warn photo-warn">{photoWarn}</p>}
               </div>
               <div
                 className="photo-inner"
@@ -679,7 +785,12 @@ export default function App() {
 
         {/* 右侧：控制面板 */}
         <div className="control-panel">
-          <section className="panel-section">
+          <section
+            className={`panel-section${signDrag ? ' drag-active' : ''}`}
+            onDragOver={onSignDragOver}
+            onDragLeave={onSignDragLeave}
+            onDrop={onSignDrop}
+          >
             <h2>广告标识</h2>
             <label className="upload-btn small">
               上传标识（SVG / 图片）
@@ -696,7 +807,12 @@ export default function App() {
             {svgString && <p className="status-ok">SVG 标识已加载</p>}
             {signImageSrc && !svgString && <p className="status-ok">图片标识已加载</p>}
             {signWarn && <p className="status-warn">{signWarn}</p>}
-            {isRendering && <p className="status-loading">正在渲染 3D 标识...</p>}
+            {isRendering && (
+              <div className="loading-row">
+                <span className="spinner" />
+                <span>正在渲染 3D 标识...</span>
+              </div>
+            )}
           </section>
 
           <section className="panel-section">
