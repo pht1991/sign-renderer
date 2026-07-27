@@ -41,10 +41,19 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   const bbox = new THREE.Box3().setFromObject(group)
   const bboxSize = new THREE.Vector3()
   bbox.getSize(bboxSize)
-  const maxDim = Math.max(bboxSize.x, bboxSize.y, 0.001)
+  // 必须包含 z 轴（厚度方向），否则大厚度时视锥算小了会裁掉正面
+  const maxDim = Math.max(bboxSize.x, bboxSize.y, bboxSize.z, 0.001)
   const halfSize = (maxDim / 2) * 1.02
-  const camera = new THREE.OrthographicCamera(-halfSize, halfSize, halfSize, -halfSize, 0.1, 100)
-  camera.position.set(0, 0, 10)
+  // 相机必须位于标识正面之前：
+  // 图片标识的贴图面在 +z（z = +depth/2），SVG 标识的图案 cap 在 z=0；
+  // 若相机固定 z=10 而厚度较大（如默认 30），+z 面会落到相机背后被裁掉 → 图片看不见。
+  // 改为按包围盒动态后移，保证正面恒在相机前方。
+  const cameraZ = halfSize + 5
+  const camera = new THREE.OrthographicCamera(
+    -halfSize, halfSize, halfSize, -halfSize,
+    0.1, cameraZ + halfSize + 10,
+  )
+  camera.position.set(0, 0, cameraZ)
   camera.lookAt(0, 0, 0)
 
   const renderer = new THREE.WebGLRenderer({
