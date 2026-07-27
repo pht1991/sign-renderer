@@ -1,0 +1,449 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #0f1115;
+  color: #e0e0e0;
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  background: #1a1d24;
+  border-bottom: 1px solid #2a2e38;
+}
+
+.app-header h1 {
+  font-size: 18px;
+  font-weight: 500;
+  color: #fff;
+}
+
+.version-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #2a2e38;
+  color: #8b92a5;
+}
+
+.main-layout {
+  display: flex;
+  flex: 1;
+  gap: 0;
+  overflow: hidden;
+}
+
+/* === 左侧画布区 === */
+.canvas-area {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: hidden;
+  background: #0f1115;
+}
+
+.upload-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 60px 40px;
+  border: 2px dashed #2a2e38;
+  border-radius: 12px;
+  color: #6b7280;
+}
+
+.upload-zone p {
+  font-size: 15px;
+}
+
+/* 内容区：裁剪视口 + 可缩放/平移的 inner 层 */
+.photo-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 8px;
+  background: repeating-conic-gradient(#15181f 0% 25%, #0f1115 0% 50%) 50% / 24px 24px;
+  touch-action: none;
+  cursor: grab;
+}
+
+.photo-stage:active {
+  cursor: grabbing;
+}
+
+.photo-inner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.photo-inner img {
+  display: block;
+  border-radius: 8px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.overlay-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  border-radius: 8px;
+}
+
+.drag-point {
+  position: absolute;
+  width: 32px;
+  height: 32px;
+  margin-left: -16px;
+  margin-top: -16px;
+  border: 2px solid;
+  border-radius: 50%;
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+  z-index: 10;
+  /* 透明中心，看穿底图判断对齐；去掉描边避免视觉边界误判偏移 */
+  transition: transform 0.1s;
+}
+
+.drag-point:hover {
+  transform: scale(1.15);
+}
+
+.drag-point:active {
+  cursor: grabbing;
+}
+
+/* 中心准心：十字线，用点颜色（currentColor）绘制。
+   用 inset:0 + margin:auto 对称居中，规避 border-box 下 left:50%+translate 的亚像素偏移 */
+.drag-point::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 16px;
+  height: 16px;
+  background:
+    linear-gradient(currentColor, currentColor) center / 1px 100% no-repeat,
+    linear-gradient(currentColor, currentColor) center / 100% 1px no-repeat;
+  pointer-events: none;
+}
+
+/* 数字移到圆环右上外侧，与中心准心分离，带深色底框保证可读 */
+.drag-point span {
+  position: absolute;
+  top: -14px;
+  right: -16px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 0 3px #000, 0 0 3px #000;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 4px;
+  padding: 1px 5px;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* hover 时显示该点的实时图像坐标，便于精确对齐诊断 */
+.coord-tip {
+  position: absolute;
+  bottom: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-family: monospace;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.72);
+  padding: 1px 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* === 右侧控制面板 === */
+.control-panel {
+  width: 320px;
+  flex-shrink: 0;
+  background: #1a1d24;
+  border-left: 1px solid #2a2e38;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.panel-section {
+  margin-bottom: 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid #2a2e38;
+}
+
+.panel-section:last-child {
+  border-bottom: none;
+}
+
+.panel-section h2 {
+  font-size: 14px;
+  font-weight: 500;
+  color: #8b92a5;
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.upload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 20px;
+  background: #3b82f6;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.upload-btn:hover {
+  background: #2563eb;
+}
+
+.upload-btn.small {
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+.text-btn {
+  background: none;
+  border: none;
+  color: #60a5fa;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 0;
+  text-decoration: underline;
+}
+
+.param-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.param-row label {
+  font-size: 13px;
+  color: #9ca3af;
+  width: 40px;
+  flex-shrink: 0;
+}
+
+.param-row input[type="range"] {
+  flex: 1;
+  accent-color: #3b82f6;
+}
+
+.param-row input[type="color"] {
+  width: 40px;
+  height: 28px;
+  border: 1px solid #2a2e38;
+  border-radius: 4px;
+  cursor: pointer;
+  background: none;
+}
+
+.param-value {
+  font-size: 13px;
+  color: #d1d5db;
+  width: 50px;
+  text-align: right;
+  font-family: monospace;
+}
+
+.point-legend {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #9ca3af;
+}
+
+.legend-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.hint {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+.status-ok {
+  font-size: 12px;
+  color: #10b981;
+  margin-top: 6px;
+}
+
+.status-loading {
+  font-size: 12px;
+  color: #f59e0b;
+  margin-top: 6px;
+}
+
+.preset-select {
+  flex: 1;
+  padding: 6px 10px;
+  background: #0f1115;
+  color: #e0e0e0;
+  border: 1px solid #2a2e38;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.preset-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.export-btn {
+  width: 100%;
+  padding: 12px;
+  background: #10b981;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.export-btn:hover:not(:disabled) {
+  background: #059669;
+}
+
+.export-btn:disabled {
+  background: #2a2e38;
+  color: #6b7280;
+  cursor: not-allowed;
+}
+
+/* === 画布区浮动工具栏 === */
+.stage-toolbar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 20;
+  display: flex;
+  gap: 8px;
+}
+
+.reset-btn {
+  padding: 6px 12px;
+  background: rgba(26, 29, 36, 0.85);
+  color: #e0e0e0;
+  border: 1px solid #2a2e38;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.reset-btn:hover {
+  background: #2a2e38;
+  color: #fff;
+}
+
+/* === 移动端响应式 === */
+@media (max-width: 860px) {
+  .main-layout {
+    flex-direction: column;
+    overflow: auto;
+  }
+
+  .canvas-area {
+    flex: none;
+    height: 52vh;
+    padding: 12px;
+    overflow: hidden;
+  }
+
+  .control-panel {
+    width: 100%;
+    flex-shrink: 0;
+    border-left: none;
+    border-top: 1px solid #2a2e38;
+    padding: 16px;
+  }
+
+  .app-header {
+    padding: 12px 16px;
+  }
+
+  .app-header h1 {
+    font-size: 15px;
+  }
+
+  .param-row label {
+    width: 52px;
+  }
+
+  .drag-point {
+    width: 34px;
+    height: 34px;
+    margin-left: -17px;
+    margin-top: -17px;
+  }
+}
+
+@media (max-width: 480px) {
+  .canvas-area {
+    height: 46vh;
+    padding: 8px;
+  }
+
+  .app-header h1 {
+    font-size: 13px;
+  }
+}
