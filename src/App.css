@@ -31,14 +31,6 @@ body {
   color: #fff;
 }
 
-.version-tag {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  background: #2a2e38;
-  color: #8b92a5;
-}
-
 .main-layout {
   display: flex;
   flex: 1;

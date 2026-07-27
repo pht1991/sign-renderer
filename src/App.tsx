@@ -527,7 +527,7 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1>广告标识外立面安装效果图生成器</h1>
-        <span className="version-tag">P0 原型</span>
+
       </header>
 
       <div className="main-layout">

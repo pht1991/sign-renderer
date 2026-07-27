@@ -185,7 +185,7 @@ function stripUrlRefs(svg: string, gradientColors: Map<string, string>): string 
 
 /**
  * 从 SVG 的 <defs> 中提取所有 linearGradient / radialGradient 的代表色
- * 代表色取中间那个 stop 的颜色（简单稳健，P0 阶段够用）
+ * 代表色取中间那个 stop 的颜色（简单稳健）
  */
 function extractGradientColors(svg: string): Map<string, string> {
   const map = new Map<string, string>()
