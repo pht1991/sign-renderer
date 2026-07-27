@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { renderSignToCanvas } from './utils/renderSign'
+import { renderSignToCanvas, renderImageToCanvas } from './utils/renderSign'
 import { PRESETS, type SignPreset } from './utils/svgToMesh'
 import { warpPerspective, type Point } from './utils/perspectiveWarp'
 import { compositeImage, downloadCanvas } from './utils/composite'
@@ -123,6 +123,9 @@ type DragState = {
 export default function App() {
   const [photoUrl, setPhotoUrl] = useState<string>('')
   const [svgString, setSvgString] = useState<string>('')
+  const [signImageSrc, setSignImageSrc] = useState<string>('')
+  const [signWarn, setSignWarn] = useState<string>('')
+  const [imageAspect, setImageAspect] = useState<number | null>(null)
   const [depth, setDepth] = useState<number>(30)
   const [color, setColor] = useState<string>('#dddddd')
   const [stretch, setStretch] = useState(false)
@@ -172,30 +175,51 @@ export default function App() {
   // 照片显示尺寸
   const [displaySize, setDisplaySize] = useState({ w: 0, h: 0 })
 
-  // SVG 自然宽高比
+  // SVG 自然宽高比（图片标识用已加载的图片宽高比，统一收敛到 signAspect）
   const svgAspect = useMemo(() => getSvgAspectRatio(svgString), [svgString])
+  const signAspect = svgAspect ?? imageAspect
 
-  // === 1. SVG 变化时重新渲染 3D 标识 ===
+  // === 1. 标识变化时重新渲染 3D 标识（SVG 或图片分流） ===
   useEffect(() => {
-    if (!svgString) {
+    if (!svgString && !signImageSrc) {
       setSignCanvas(null)
       return
     }
     let cancelled = false
     setIsRendering(true)
-    renderSignToCanvas(svgString, depth, 512, {
-      stretch,
-      color,
-      preset,
-      ambientColor: ambientColor || undefined,
-    }).then((canvas) => {
+    const run: Promise<HTMLCanvasElement> = svgString
+      ? renderSignToCanvas(svgString, depth, 512, {
+          stretch,
+          color,
+          preset,
+          ambientColor: ambientColor || undefined,
+        })
+      : new Promise<HTMLCanvasElement>((resolve) => {
+          const img = new Image()
+          img.onload = () => {
+            setImageAspect(img.width / img.height)
+            renderImageToCanvas(img, depth, 512, {
+              stretch,
+              color,
+              preset,
+              ambientColor: ambientColor || undefined,
+            }).then(resolve)
+          }
+          img.onerror = () => {
+            setSignWarn('图片加载失败，请换一张试试')
+            setSignCanvas(null)
+            setIsRendering(false)
+          }
+          img.src = signImageSrc
+        })
+    run.then((canvas) => {
       if (!cancelled) {
         setSignCanvas(canvas)
         setIsRendering(false)
       }
     })
     return () => { cancelled = true }
-  }, [svgString, depth, color, stretch, preset, ambientColor])
+  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor])
 
   // === 2. 实时预览合成 ===
   const updatePreview = useCallback(() => {
@@ -479,17 +503,42 @@ export default function App() {
     setPhotoLoaded(false)
   }
 
-  const handleSvgUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSignUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    const reader = new FileReader()
-    reader.onload = () => {
-      setSvgString(reader.result as string)
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+    const type = file.type
+    if (ext === 'svg' || type.includes('svg')) {
+      const reader = new FileReader()
+      reader.onload = () => {
+        setSignImageSrc('')
+        setImageAspect(null)
+        setSignWarn('')
+        setSvgString(reader.result as string)
+      }
+      reader.readAsText(file)
+    } else if (
+      ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext) ||
+      type.startsWith('image/')
+    ) {
+      const url = URL.createObjectURL(file)
+      setSvgString('')
+      setImageAspect(null)
+      setSignWarn('')
+      setSignImageSrc(url)
+    } else if (['ai', 'eps'].includes(ext) || type.includes('postscript')) {
+      setSignWarn(
+        'AI / EPS 文件浏览器无法直接解析，请在 Illustrator 或 Inkscape 中“导出为 SVG”后再上传',
+      )
+    } else {
+      setSignWarn('不支持的文件格式，请上传 SVG 矢量图或 PNG / JPG / WebP 图片')
     }
-    reader.readAsText(file)
   }
 
   const loadSampleSvg = () => {
+    setSignImageSrc('')
+    setImageAspect(null)
+    setSignWarn('')
     setSvgString(SAMPLE_SVG)
   }
 
@@ -615,13 +664,20 @@ export default function App() {
           <section className="panel-section">
             <h2>广告标识</h2>
             <label className="upload-btn small">
-              上传 SVG 矢量图
-              <input type="file" accept=".svg,image/svg+xml" onChange={handleSvgUpload} hidden />
+              上传标识（SVG / 图片）
+              <input
+                type="file"
+                accept=".svg,image/svg+xml,.png,.jpg,.jpeg,.webp,.gif,.ai,.eps,application/postscript,image/*"
+                onChange={handleSignUpload}
+                hidden
+              />
             </label>
             <button className="text-btn" onClick={loadSampleSvg}>
               使用示例 LOGO
             </button>
-            {svgString && <p className="status-ok">SVG 已加载</p>}
+            {svgString && <p className="status-ok">SVG 标识已加载</p>}
+            {signImageSrc && !svgString && <p className="status-ok">图片标识已加载</p>}
+            {signWarn && <p className="status-warn">{signWarn}</p>}
             {isRendering && <p className="status-loading">正在渲染 3D 标识...</p>}
           </section>
 
@@ -639,7 +695,7 @@ export default function App() {
               <span className="param-value">{depth}</span>
             </div>
             <div className="param-row">
-              <label>颜色</label>
+              <label>{signImageSrc && !svgString ? '边框色' : '颜色'}</label>
               <input
                 type="color"
                 value={color}
@@ -679,13 +735,13 @@ export default function App() {
               />
               <span className="param-value">{lockRatio ? '开' : '关'}</span>
             </div>
-            {svgAspect && (
+            {signAspect && (
               <div className="param-row">
-                <label>SVG 比例</label>
-                <span className="param-value">{svgAspect.toFixed(2)}</span>
+                <label>标识比例</label>
+                <span className="param-value">{signAspect.toFixed(2)}</span>
               </div>
             )}
-            {lockRatio && svgAspect && (
+            {lockRatio && signAspect && (
               <>
                 <div className="param-row">
                   <label>透视</label>
