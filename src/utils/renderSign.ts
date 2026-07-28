@@ -221,6 +221,9 @@ export async function renderSignToCanvas(
       } else if (mapTex) {
         face.map = mapTex
         face.color = new THREE.Color(0xffffff)
+        // SVG 贴图常有镂空/透明区域，开启 alpha 混合避免透明处显黑
+        face.transparent = true
+        face.alphaTest = 0.05
       }
 
       if (presetDef.emissiveIntensity > 0) {
@@ -326,6 +329,10 @@ async function renderLayeredToCanvas(
       } else if (tex) {
         face.map = tex
         face.color = new THREE.Color(0xffffff)
+        // 分层贴图通常只覆盖该层图案（其余区域透明），必须开启 alpha 混合，
+        // 否则 WebGL 会把透明区域渲成黑色，遮挡下层内容。
+        face.transparent = true
+        face.alphaTest = 0.05
       } else {
         // 该层贴图缺失：回退纯色，避免整片透明
         face.map = null
