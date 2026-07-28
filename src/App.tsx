@@ -324,52 +324,62 @@ export default function App() {
     }
     let cancelled = false
     setIsRendering(true)
-    const run: Promise<HTMLCanvasElement> = svgString
-      ? renderSignToCanvas(svgString, depth, 512, {
-          stretch,
-          color,
-          preset,
-          ambientColor: ambientColor || undefined,
-          lightAzimuth,
-          lightIntensity,
-        })
-      : new Promise<HTMLCanvasElement>((resolve) => {
-          const img = new Image()
-          img.onload = () => {
-            setImageAspect(img.width / img.height)
-            renderImageToCanvas(img, depth, 512, {
-              stretch,
-              color,
-              preset,
-              ambientColor: ambientColor || undefined,
-              lightAzimuth,
-              lightIntensity,
-            }).then(resolve)
+    // 渲染本身是重活（SVG 解析 + ExtrudeGeometry 拉伸 / 图片贴图），
+    // 拖动滑块等高频参数变化会连续触发，用 250ms 防抖合并为一次渲染，避免卡顿。
+    const run = (): Promise<HTMLCanvasElement> =>
+      svgString
+        ? renderSignToCanvas(svgString, depth, 512, {
+            stretch,
+            color,
+            preset,
+            ambientColor: ambientColor || undefined,
+            lightAzimuth,
+            lightIntensity,
+          })
+        : new Promise<HTMLCanvasElement>((resolve) => {
+            const img = new Image()
+            img.onload = () => {
+              setImageAspect(img.width / img.height)
+              renderImageToCanvas(img, depth, 512, {
+                stretch,
+                color,
+                preset,
+                ambientColor: ambientColor || undefined,
+                lightAzimuth,
+                lightIntensity,
+              }).then(resolve)
+            }
+            img.onerror = () => {
+              setSignWarn('图片加载失败，请换一张试试')
+              setSignCanvas(null)
+              setIsRendering(false)
+            }
+            img.src = signImageSrc
+          })
+    const timer = window.setTimeout(() => {
+      run()
+        .then((canvas) => {
+          if (!cancelled) {
+            setSignCanvas(canvas)
+            setIsRendering(false)
           }
-          img.onerror = () => {
-            setSignWarn('图片加载失败，请换一张试试')
+        })
+        .catch(() => {
+          if (!cancelled) {
+            // 区分输入类型给出针对性提示：SVG 与图片/AI/EPS 的失败原因不同
+            const msg = svgString
+              ? 'SVG 渲染失败，可能包含当前不支持的元素，建议导出为精简 SVG 后重试'
+              : '图片 / AI / EPS 加载失败，请换一张试试，或导出为 SVG 后上传'
+            setSignWarn(msg)
             setSignCanvas(null)
             setIsRendering(false)
           }
-          img.src = signImageSrc
         })
-    run.then((canvas) => {
-      if (!cancelled) {
-        setSignCanvas(canvas)
-        setIsRendering(false)
-      }
-    }).catch(() => {
-      if (!cancelled) {
-        // 区分输入类型给出针对性提示：SVG 与图片/AI/EPS 的失败原因不同
-        const msg = svgString
-          ? 'SVG 渲染失败，可能包含当前不支持的元素，建议导出为精简 SVG 后重试'
-          : '图片 / AI / EPS 加载失败，请换一张试试，或导出为 SVG 后上传'
-        setSignWarn(msg)
-        setSignCanvas(null)
-        setIsRendering(false)
-      }
-    })
-    return () => { cancelled = true }
+    }, 250)
+    return () => {
+      window.clearTimeout(timer)
+      cancelled = true
+    }
   }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity])
 
   // === 2. 实时预览合成 ===
