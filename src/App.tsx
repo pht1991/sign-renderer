@@ -159,13 +159,17 @@ function sampleAverageColor(img: HTMLImageElement): string | null {
   }
 }
 
+// 示例 LOGO：双图层（底板 + 文字）。文字必须用 <path> 而非 <text>——
+// Three.js SVGLoader 无法把 <text> 拉伸成 3D 几何，分层模式下会整层消失。
 const SAMPLE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 80">
   <g id="底板">
     <rect x="5" y="5" width="190" height="70" rx="10" fill="#2c3e50"/>
   </g>
   <g id="文字">
-    <text x="100" y="52" font-family="Arial,sans-serif" font-size="36" font-weight="bold"
-          text-anchor="middle" fill="#e74c3c">LOGO</text>
+    <path fill="#e74c3c" d="M40 22 h10 v26 h16 v10 h-26 z"/>
+    <path fill="#e74c3c" fill-rule="evenodd" d="M76 22 h26 v36 h-26 z M86 32 h6 v16 h-6 z"/>
+    <path fill="#e74c3c" d="M112 22 h26 v10 h-16 v16 h6 v-6 h10 v16 h-26 z"/>
+    <path fill="#e74c3c" fill-rule="evenodd" d="M148 22 h26 v36 h-26 z M158 32 h6 v16 h-6 z"/>
   </g>
 </svg>`
 

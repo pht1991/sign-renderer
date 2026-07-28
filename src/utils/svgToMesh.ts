@@ -151,12 +151,16 @@ export function svgToGroup(
       maxY = Math.max(maxY, p.getY(i))
     }
   }
-  const bbox: SvgBBox = {
-    minX,
-    minY,
-    w: maxX - minX || 1,
-    h: maxY - minY || 1,
-  }
+  // 无几何（如 <text> 等 SVGLoader 不支持的元素）时兜底，避免 Infinity 污染下游光栅化
+  const bbox: SvgBBox =
+    geometries.length === 0 || !Number.isFinite(minX)
+      ? { minX: 0, minY: 0, w: 1, h: 1 }
+      : {
+          minX,
+          minY,
+          w: maxX - minX || 1,
+          h: maxY - minY || 1,
+        }
   for (const g of geometries) {
     applyPlanarUV(g, bbox)
   }

@@ -157,10 +157,11 @@ export async function renderSignToCanvas(
 
   const overrideColor = color && color !== '#dddddd' ? new THREE.Color(color) : null
 
-  // 立体分层：检测 SVG 顶层图层，逐层拉伸 + Z 轴堆叠成浮雕
+  // 立体分层：检测 SVG 顶层图层，逐层拉伸 + Z 轴堆叠成浮雕。
+  // 若有效几何图层不足两层（如某层全是 <text> 等无法拉伸的元素），返回 null 回退单层。
   const layers = layered ? detectSvgLayers(svgString) : null
   if (layers && layers.length > 1) {
-    return renderLayeredToCanvas(layers, depth, renderSize, {
+    const layeredCanvas = await renderLayeredToCanvas(layers, depth, renderSize, {
       preset,
       ambientColor,
       lightAzimuth,
@@ -168,6 +169,7 @@ export async function renderSignToCanvas(
       layerGap,
       overrideColor,
     })
+    if (layeredCanvas) return layeredCanvas
   }
 
   // 创建标识 Group（归一化到最大边长 = 2，居中于原点）
@@ -259,18 +261,32 @@ async function renderLayeredToCanvas(
     layerGap: number
     overrideColor: THREE.Color | null
   },
-): Promise<HTMLCanvasElement> {
+): Promise<HTMLCanvasElement | null> {
   const { preset, ambientColor, lightAzimuth, lightIntensity, layerGap, overrideColor } = opts
 
-  const parent = new THREE.Group()
-  const layerGroups: { sub: THREE.Group; svg: string }[] = []
+  // 逐层解析几何，过滤掉零几何图层（如 <text>、空 <g> 等 SVGLoader 无法拉伸的内容）
+  const built = layers.map((ly) => ({ sub: svgToGroup(ly.svg, depth, true), svg: ly.svg }))
+  const layerGroups = built.filter((b) => b.sub.children.length > 0)
 
-  layers.forEach((ly, i) => {
+  // 有效图层不足两层：分层无意义，清理已建几何并回退单层渲染
+  if (layerGroups.length < 2) {
+    built.forEach((b) =>
+      b.sub.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) {
+          obj.geometry?.dispose()
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
+          mats.forEach((m) => m?.dispose())
+        }
+      }),
+    )
+    return null
+  }
+
+  const parent = new THREE.Group()
+  layerGroups.forEach((b, i) => {
     // 分层模式固定带倒角，浮雕侧面更真实；每层沿 +Z 堆叠
-    const sub = svgToGroup(ly.svg, depth, true)
-    sub.position.z = i * (depth + layerGap)
-    parent.add(sub)
-    layerGroups.push({ sub, svg: ly.svg })
+    b.sub.position.z = i * (depth + layerGap)
+    parent.add(b.sub)
   })
 
   // 整体归一化：把整座浮雕缩放居中到原点（仅按 xy 平面尺寸，z 厚度不并入视锥）
@@ -472,13 +488,16 @@ async function rasterizeSvg(
   try {
     const rw = size
     const rh = Math.max(1, Math.round((size * bbox.h) / bbox.w))
-    let s = svgString
-    s = s.replace(/\swidth="[^"]*"/, ' ')
-    s = s.replace(/\sheight="[^"]*"/, ' ')
-    s = s.replace(/\sviewBox="[^"]*"/, ' ')
-    s = s.replace(
-      /<svg/i,
-      `<svg viewBox="${bbox.minX} ${bbox.minY} ${bbox.w} ${bbox.h}" width="${rw}" height="${rh}"`,
+    // 只清理根 <svg> 标签上的尺寸属性。
+    // 注意：绝不能对全文做 replace（无 g 且不限定标签时，首个匹配可能是
+    // <rect width="..."> 等图形元素，误删会导致该图形在贴图里消失 → alpha=0 → 黑块/黑框）。
+    const s = svgString.replace(/<svg[^>]*>/i, (tag) =>
+      tag
+        .replace(/\s(?:width|height|viewBox)\s*=\s*"[^"]*"/gi, ' ')
+        .replace(
+          /<svg/i,
+          `<svg viewBox="${bbox.minX} ${bbox.minY} ${bbox.w} ${bbox.h}" width="${rw}" height="${rh}"`,
+        ),
     )
     const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s)
     const img = new Image()
