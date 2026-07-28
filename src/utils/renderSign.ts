@@ -37,6 +37,12 @@ interface CoreRenderInput {
   applyMaterial: (mesh: THREE.Mesh) => void
   /** 渲染完成后需要额外 dispose 的纹理（如贴图） */
   extraDispose?: THREE.Texture[]
+  /**
+   * 开启实时阴影（分层模式用）：上层图案在下层底板上投下柔和阴影。
+   * 正交相机正对标识时层间 Z 堆叠没有视差，层间距的立体感只能靠投影体现——
+   * 间距越大，影子偏移越大越柔，且方向跟随光照方位角。
+   */
+  enableShadow?: boolean
 }
 
 /**
@@ -44,7 +50,7 @@ interface CoreRenderInput {
  * SVG 标识与图片标识共用此函数，保证光感、材质、导出格式完全一致。
  */
 async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasElement> {
-  const { group, renderSize, ambientColor, applyMaterial, extraDispose = [] } = input
+  const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false } = input
 
   const scene = new THREE.Scene()
   scene.add(group)
@@ -76,14 +82,19 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   renderer.setSize(renderSize, renderSize)
   renderer.setClearColor(0x000000, 0)
   renderer.setPixelRatio(1)
+  if (enableShadow) {
+    renderer.shadowMap.enabled = true
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  }
 
   // 环境反射：渐变环境贴图，让金属/亚克力质感真实（避免金属发黑）
   const env = buildEnvTexture(renderer, ambientColor)
   if (env) scene.environment = env
 
   // 光照系统：主光（方位角 + 强度可调） + 补光 + 轮廓光 + 环境光（由照片平均色驱动）
+  // 分层模式下降低环境/补光，让主光投影更突出，层间距变化才能被肉眼察觉
   const tint = ambientColor ? new THREE.Color(ambientColor) : new THREE.Color(0xffffff)
-  scene.add(new THREE.AmbientLight(tint.getHex(), 0.6))
+  scene.add(new THREE.AmbientLight(tint.getHex(), enableShadow ? 0.35 : 0.6))
 
   // 主光方向：方位角 az（-90~90，0=正前），俯仰固定 30°，保证光恒在正面半区（z≥0）不把招牌打黑
   const lightAz = ((input.lightAzimuth ?? 0) * Math.PI) / 180
@@ -94,13 +105,30 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   const lz = Math.cos(lightAz) * Math.cos(lightEl) * lightR
   const keyLight = new THREE.DirectionalLight(0xffffff, 1.5 * (input.lightIntensity ?? 1))
   keyLight.position.set(lx, ly, lz)
+  if (enableShadow) {
+    // 主光投影：覆盖整个标识（归一化后最大边=2），高分辨率软阴影
+    keyLight.castShadow = true
+    keyLight.shadow.mapSize.set(2048, 2048)
+    const sc = keyLight.shadow.camera
+    sc.left = -3
+    sc.right = 3
+    sc.top = 3
+    sc.bottom = -3
+    sc.near = 0.1
+    sc.far = 50
+    keyLight.shadow.bias = -0.0008
+    keyLight.shadow.normalBias = 0.02
+    keyLight.shadow.radius = 6
+    keyLight.target.position.set(0, 0, 0)
+    scene.add(keyLight.target)
+  }
   scene.add(keyLight)
 
-  const fillLight = new THREE.DirectionalLight(0xaabbff, 0.6)
+  const fillLight = new THREE.DirectionalLight(0xaabbff, enableShadow ? 0.25 : 0.6)
   fillLight.position.set(-3, -1, 2)
   scene.add(fillLight)
 
-  const rimLight = new THREE.DirectionalLight(0xffeecc, 0.5)
+  const rimLight = new THREE.DirectionalLight(0xffeecc, enableShadow ? 0.25 : 0.5)
   rimLight.position.set(0, 2, -3)
   scene.add(rimLight)
 
@@ -108,6 +136,10 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   group.traverse((child) => {
     if (child instanceof THREE.Mesh && Array.isArray(child.material)) {
       applyMaterial(child)
+      if (enableShadow) {
+        child.castShadow = true
+        child.receiveShadow = true
+      }
     }
   })
 
@@ -168,6 +200,7 @@ export async function renderSignToCanvas(
       lightIntensity,
       layerGap,
       overrideColor,
+      stretch,
     })
     if (layeredCanvas) return layeredCanvas
   }
@@ -260,9 +293,10 @@ async function renderLayeredToCanvas(
     lightIntensity?: number
     layerGap: number
     overrideColor: THREE.Color | null
+    stretch?: boolean
   },
 ): Promise<HTMLCanvasElement | null> {
-  const { preset, ambientColor, lightAzimuth, lightIntensity, layerGap, overrideColor } = opts
+  const { preset, ambientColor, lightAzimuth, lightIntensity, layerGap, overrideColor, stretch = false } = opts
 
   // 逐层解析几何，过滤掉零几何图层（如 <text>、空 <g> 等 SVGLoader 无法拉伸的内容）
   const built = layers.map((ly) => ({ sub: svgToGroup(ly.svg, depth, true), svg: ly.svg }))
@@ -292,6 +326,21 @@ async function renderLayeredToCanvas(
   // 整体归一化：把整座浮雕缩放居中到原点（仅按 xy 平面尺寸，z 厚度不并入视锥）
   normalizeGroup(parent, 2)
 
+  // 拉伸铺满：与单层路径一致，非等比缩放填满 2x2 正方形画布后重新居中。
+  // 注意必须在归一化之后做，且只缩 xy，层间距（z）不受影响。
+  if (stretch) {
+    const preBox = new THREE.Box3().setFromObject(parent)
+    const preSize = new THREE.Vector3()
+    preBox.getSize(preSize)
+    if (preSize.x > 0 && preSize.y > 0) {
+      parent.scale.x *= 2 / preSize.x
+      parent.scale.y *= 2 / preSize.y
+    }
+    const recenterBox = new THREE.Box3().setFromObject(parent)
+    const recenterCenter = recenterBox.getCenter(new THREE.Vector3())
+    parent.position.sub(recenterCenter)
+  }
+
   // 逐层光栅化贴图（仅在不使用统一颜色时），挂到各子组的 userData.layerTex
   const extraDispose: THREE.Texture[] = []
   if (!overrideColor) {
@@ -315,6 +364,8 @@ async function renderLayeredToCanvas(
     lightAzimuth,
     lightIntensity,
     extraDispose,
+    // 层间立体感靠上层在下层的投影体现：间距越大影子偏移越大
+    enableShadow: true,
     applyMaterial: (mesh) => {
       // 向上回溯找到所属图层的贴图（userData.layerTex），找不到则用统一色
       let o: THREE.Object3D | null = mesh
