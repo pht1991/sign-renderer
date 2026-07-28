@@ -13,6 +13,10 @@ export interface RenderOptions {
   preset?: SignPreset
   /** 建筑照片平均色（hex），用于环境光自动匹配，让标识光照与场景协调 */
   ambientColor?: string
+  /** 主光水平方位角（度），-90~90，控制光照左右方向，0 为正前方 */
+  lightAzimuth?: number
+  /** 主光强度系数，1 为默认，范围约 0.3~2.5 */
+  lightIntensity?: number
 }
 
 /** 渲染核心所需的公共参数 */
@@ -21,6 +25,10 @@ interface CoreRenderInput {
   renderSize: number
   ambientColor?: string
   preset: SignPreset
+  /** 主光水平方位角（度），-90~90 */
+  lightAzimuth?: number
+  /** 主光强度系数 */
+  lightIntensity?: number
   /** 由调用方根据自身的材质数组顺序，设置正面 / 侧面材质 */
   applyMaterial: (mesh: THREE.Mesh) => void
   /** 渲染完成后需要额外 dispose 的纹理（如贴图） */
@@ -69,12 +77,19 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   const env = buildEnvTexture(renderer, ambientColor)
   if (env) scene.environment = env
 
-  // 光照系统：主光 + 补光 + 轮廓光 + 环境光（由照片平均色驱动）
+  // 光照系统：主光（方位角 + 强度可调） + 补光 + 轮廓光 + 环境光（由照片平均色驱动）
   const tint = ambientColor ? new THREE.Color(ambientColor) : new THREE.Color(0xffffff)
   scene.add(new THREE.AmbientLight(tint.getHex(), 0.6))
 
-  const keyLight = new THREE.DirectionalLight(0xffffff, 1.5)
-  keyLight.position.set(2, 3, 5)
+  // 主光方向：方位角 az（-90~90，0=正前），俯仰固定 30°，保证光恒在正面半区（z≥0）不把招牌打黑
+  const lightAz = ((input.lightAzimuth ?? 0) * Math.PI) / 180
+  const lightEl = (30 * Math.PI) / 180
+  const lightR = 6
+  const lx = Math.sin(lightAz) * Math.cos(lightEl) * lightR
+  const ly = Math.sin(lightEl) * lightR
+  const lz = Math.cos(lightAz) * Math.cos(lightEl) * lightR
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.5 * (input.lightIntensity ?? 1))
+  keyLight.position.set(lx, ly, lz)
   scene.add(keyLight)
 
   const fillLight = new THREE.DirectionalLight(0xaabbff, 0.6)
@@ -125,7 +140,7 @@ export async function renderSignToCanvas(
   renderSize: number = 512,
   opts: RenderOptions = {},
 ): Promise<HTMLCanvasElement> {
-  const { stretch = false, color = '#dddddd', preset = 'matte', ambientColor } = opts
+  const { stretch = false, color = '#dddddd', preset = 'matte', ambientColor, lightAzimuth, lightIntensity } = opts
 
   // 创建标识 Group（归一化到最大边长 = 2，居中于原点）
   // 拉伸铺满时关闭倒角，避免倒角外扩导致正面无法精确填满画布
@@ -158,6 +173,8 @@ export async function renderSignToCanvas(
     renderSize,
     ambientColor,
     preset,
+    lightAzimuth,
+    lightIntensity,
     extraDispose: mapTex ? [mapTex] : [],
     applyMaterial: (mesh) => {
       const mats = mesh.material as THREE.MeshStandardMaterial[]
@@ -207,7 +224,7 @@ export async function renderImageToCanvas(
   renderSize: number = 512,
   opts: RenderOptions = {},
 ): Promise<HTMLCanvasElement> {
-  const { color = '#dddddd', preset = 'matte', ambientColor } = opts
+  const { color = '#dddddd', preset = 'matte', ambientColor, lightAzimuth, lightIntensity } = opts
 
   // 归一化：最大边 = 2 居中，厚度沿 Z 轴
   const aspect = img.width && img.height ? img.width / img.height : 1
@@ -238,6 +255,8 @@ export async function renderImageToCanvas(
     renderSize,
     ambientColor,
     preset,
+    lightAzimuth,
+    lightIntensity,
     extraDispose: [imgTex],
     applyMaterial: (m) => {
       const presetDef = PRESETS[preset] ?? PRESETS.matte

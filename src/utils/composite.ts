@@ -16,18 +16,21 @@ export function compositeImage(
   points: [Point, Point, Point, Point],
   displayWidth: number,
   displayHeight: number,
+  outputScale: number = 1,
 ): HTMLCanvasElement {
+  const outW = Math.max(1, Math.round(photoImage.naturalWidth * outputScale))
+  const outH = Math.max(1, Math.round(photoImage.naturalHeight * outputScale))
   const canvas = document.createElement('canvas')
-  canvas.width = photoImage.naturalWidth
-  canvas.height = photoImage.naturalHeight
+  canvas.width = outW
+  canvas.height = outH
   const ctx = canvas.getContext('2d')!
 
-  // 绘制建筑照片底图
-  ctx.drawImage(photoImage, 0, 0)
+  // 绘制建筑照片底图（按输出分辨率放大填充）
+  ctx.drawImage(photoImage, 0, 0, canvas.width, canvas.height)
 
-  // 将显示坐标换算为原图坐标
-  const scaleX = photoImage.naturalWidth / displayWidth
-  const scaleY = photoImage.naturalHeight / displayHeight
+  // 将显示坐标换算为输出图坐标（已含 outputScale 倍率）
+  const scaleX = canvas.width / displayWidth
+  const scaleY = canvas.height / displayHeight
 
   const dstPoints: [Point, Point, Point, Point] = [
     { x: points[0].x * scaleX, y: points[0].y * scaleY },

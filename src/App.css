@@ -491,3 +491,14 @@ body {
     font-size: 13px;
   }
 }
+
+/* 撤销 / 重做按钮并排 */
+.undo-redo-row {
+  display: flex;
+  gap: 10px;
+}
+
+.undo-redo-row .text-btn {
+  flex: 1;
+  text-align: center;
+}

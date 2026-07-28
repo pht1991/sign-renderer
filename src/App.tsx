@@ -227,12 +227,13 @@ export default function App() {
   } | null>(null)
 
   // 四个标记点（基于显示坐标）
-  const [points, setPoints] = useState<[Point, Point, Point, Point]>([
+  const INITIAL_POINTS: [Point, Point, Point, Point] = [
     { x: 100, y: 100 },
     { x: 300, y: 100 },
     { x: 300, y: 200 },
     { x: 100, y: 200 },
-  ])
+  ]
+  const [points, setPoints] = useState<[Point, Point, Point, Point]>(INITIAL_POINTS)
 
   // 照片显示尺寸
   const [displaySize, setDisplaySize] = useState({ w: 0, h: 0 })
@@ -240,6 +241,80 @@ export default function App() {
   // SVG 自然宽高比（图片标识用已加载的图片宽高比，统一收敛到 signAspect）
   const svgAspect = useMemo(() => getSvgAspectRatio(svgString), [svgString])
   const signAspect = svgAspect ?? imageAspect
+
+  // === 光照 / 导出分辨率控制 ===
+  const [lightAzimuth, setLightAzimuth] = useState<number>(0)
+  const [lightIntensity, setLightIntensity] = useState<number>(1)
+  const [exportScale, setExportScale] = useState<number>(1)
+
+  // === 撤销 / 重做历史系统 ===
+  type EditState = {
+    points: [Point, Point, Point, Point]
+    depth: number
+    color: string
+    stretch: boolean
+    lockRatio: boolean
+    preset: SignPreset
+    perspective: number
+    lightAzimuth: number
+    lightIntensity: number
+  }
+  const editRef = useRef<EditState>({
+    points: INITIAL_POINTS,
+    depth, color, stretch, lockRatio, preset, perspective,
+    lightAzimuth: 0, lightIntensity: 1,
+  })
+  const pointsRef = useRef<[Point, Point, Point, Point]>(INITIAL_POINTS)
+  const dragStartRef = useRef<EditState | null>(null)
+  const historyRef = useRef<{ stack: EditState[]; index: number }>({ stack: [], index: -1 })
+  const [historyTick, setHistoryTick] = useState(0)
+
+  // 把可撤销状态同步到 editRef（points 用 pointsRef 保证拖拽即时最新）
+  useEffect(() => {
+    editRef.current = {
+      points: pointsRef.current,
+      depth, color, stretch, lockRatio, preset, perspective,
+      lightAzimuth, lightIntensity,
+    }
+  }, [points, depth, color, stretch, lockRatio, preset, perspective, lightAzimuth, lightIntensity])
+
+  const applyState = useCallback((s: EditState) => {
+    setPoints(s.points)
+    setDepth(s.depth)
+    setColor(s.color)
+    setStretch(s.stretch)
+    setLockRatio(s.lockRatio)
+    setPreset(s.preset)
+    setPerspective(s.perspective)
+    setLightAzimuth(s.lightAzimuth)
+    setLightIntensity(s.lightIntensity)
+  }, [])
+
+  const commit = useCallback((before?: EditState) => {
+    const full = before ?? { ...editRef.current, points: pointsRef.current }
+    const h = historyRef.current
+    h.stack = h.stack.slice(0, h.index + 1)
+    h.stack.push(full)
+    if (h.stack.length > 100) h.stack.shift()
+    h.index = h.stack.length - 1
+    setHistoryTick((t) => t + 1)
+  }, [])
+
+  const undo = useCallback(() => {
+    const h = historyRef.current
+    if (h.index <= 0) return
+    h.index -= 1
+    applyState(h.stack[h.index])
+    setHistoryTick((t) => t + 1)
+  }, [applyState])
+
+  const redo = useCallback(() => {
+    const h = historyRef.current
+    if (h.index >= h.stack.length - 1) return
+    h.index += 1
+    applyState(h.stack[h.index])
+    setHistoryTick((t) => t + 1)
+  }, [applyState])
 
   // === 1. 标识变化时重新渲染 3D 标识（SVG 或图片分流） ===
   useEffect(() => {
@@ -255,6 +330,8 @@ export default function App() {
           color,
           preset,
           ambientColor: ambientColor || undefined,
+          lightAzimuth,
+          lightIntensity,
         })
       : new Promise<HTMLCanvasElement>((resolve) => {
           const img = new Image()
@@ -265,6 +342,8 @@ export default function App() {
               color,
               preset,
               ambientColor: ambientColor || undefined,
+              lightAzimuth,
+              lightIntensity,
             }).then(resolve)
           }
           img.onerror = () => {
@@ -291,7 +370,7 @@ export default function App() {
       }
     })
     return () => { cancelled = true }
-  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor])
+  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity])
 
   // === 2. 实时预览合成 ===
   const updatePreview = useCallback(() => {
@@ -409,18 +488,6 @@ export default function App() {
   }, [fitToStage])
 
   // 角点拖拽
-  const onPointDown = (e: React.PointerEvent, index: number) => {
-    e.preventDefault()
-    e.stopPropagation()
-    const m = screenToImage(e.clientX, e.clientY)
-    dragRef.current = {
-      index,
-      offsetX: m.x - points[index].x,
-      offsetY: m.y - points[index].y,
-    }
-    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
-  }
-
   const onPointMove = (e: React.PointerEvent) => {
     if (!dragRef.current) return
     const m = screenToImage(e.clientX, e.clientY)
@@ -452,11 +519,26 @@ export default function App() {
         x: Math.max(0, Math.min(displaySize.w, fx)),
         y: Math.max(0, Math.min(displaySize.h, fy)),
       }
+      pointsRef.current = next
       return next
     })
   }
 
+  const onPointDown = (e: React.PointerEvent, index: number) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragStartRef.current = { ...editRef.current, points: pointsRef.current }
+    const m = screenToImage(e.clientX, e.clientY)
+    dragRef.current = {
+      index,
+      offsetX: m.x - points[index].x,
+      offsetY: m.y - points[index].y,
+    }
+    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+  }
+
   const onPointUp = () => {
+    if (dragRef.current) commit(dragStartRef.current ?? undefined)
     dragRef.current = null
   }
 
@@ -504,6 +586,7 @@ export default function App() {
       // 在标识四边形内按下 → 整体移动图层；否则平移视图
       const m = screenToImage(e.clientX, e.clientY)
       if (pointInQuad(m, points)) {
+        dragStartRef.current = { ...editRef.current, points: pointsRef.current }
         layerMoveRef.current = { startImg: m, origPoints: points }
         pinchStartRef.current = null
         return
@@ -549,14 +632,16 @@ export default function App() {
       const maxY = Math.max(...ys)
       const dxC = clamp(dx, -minX, displaySize.w - maxX)
       const dyC = clamp(dy, -minY, displaySize.h - maxY)
-      setPoints(
-        lm.origPoints.map((p) => ({ x: p.x + dxC, y: p.y + dyC })) as [
+      setPoints((prev) => {
+        const next = lm.origPoints.map((p) => ({ x: p.x + dxC, y: p.y + dyC })) as [
           Point,
           Point,
           Point,
           Point,
-        ],
-      )
+        ]
+        pointsRef.current = next
+        return next
+      })
       return
     }
     if (pinchStartRef.current && pointersRef.current.size >= 2) {
@@ -595,6 +680,7 @@ export default function App() {
     } catch {
       // ignore
     }
+    if (layerMoveRef.current) commit(dragStartRef.current ?? undefined)
     layerMoveRef.current = null
     if (pointersRef.current.size < 2) pinchStartRef.current = null
     if (pointersRef.current.size === 0) panStartRef.current = null
@@ -724,11 +810,29 @@ export default function App() {
   }
 
   // === 6. 导出效果图 ===
+  // 快捷键：撤销 / 重做（Ctrl/⌘+Z，Ctrl/⌘+Shift+Z 或 Ctrl+Y）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const meta = e.ctrlKey || e.metaKey
+      if (!meta) return
+      const key = e.key.toLowerCase()
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        undo()
+      } else if ((key === 'z' && e.shiftKey) || key === 'y') {
+        e.preventDefault()
+        redo()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [undo, redo])
+
   const handleExport = () => {
     const img = photoRef.current
     if (!img || !signCanvas) return
-    const canvas = compositeImage(img, signCanvas, points, displaySize.w, displaySize.h)
-    downloadCanvas(canvas, '广告标识安装效果图.png')
+    const canvas = compositeImage(img, signCanvas, points, displaySize.w, displaySize.h, exportScale)
+    downloadCanvas(canvas, `广告标识安装效果图_${exportScale}x.png`)
   }
 
   // === 7. 按 SVG 比例适配四点（透视梯形） ===
@@ -894,6 +998,9 @@ export default function App() {
                 max="80"
                 value={depth}
                 onChange={(e) => setDepth(Number(e.target.value))}
+                onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
+                onPointerUp={() => commit(dragStartRef.current ?? undefined)}
+                onKeyUp={() => commit()}
               />
               <span className="param-value">{depth}</span>
             </div>
@@ -903,6 +1010,7 @@ export default function App() {
                 type="color"
                 value={color}
                 onChange={(e) => setColor(e.target.value)}
+                onBlur={() => commit()}
               />
               <span className="param-value">{color}</span>
             </div>
@@ -911,7 +1019,7 @@ export default function App() {
               <input
                 type="checkbox"
                 checked={stretch}
-                onChange={(e) => setStretch(e.target.checked)}
+                onChange={(e) => { setStretch(e.target.checked); commit() }}
               />
               <span className="param-value">{stretch ? '开' : '关'}</span>
             </div>
@@ -919,7 +1027,7 @@ export default function App() {
               <label>材质</label>
               <select
                 value={preset}
-                onChange={(e) => setPreset(e.target.value as SignPreset)}
+                onChange={(e) => { setPreset(e.target.value as SignPreset); commit() }}
                 className="preset-select"
               >
                 {(Object.keys(PRESETS) as SignPreset[]).map((key) => (
@@ -934,7 +1042,7 @@ export default function App() {
               <input
                 type="checkbox"
                 checked={lockRatio}
-                onChange={(e) => setLockRatio(e.target.checked)}
+                onChange={(e) => { setLockRatio(e.target.checked); commit() }}
               />
               <span className="param-value">{lockRatio ? '开' : '关'}</span>
             </div>
@@ -955,6 +1063,9 @@ export default function App() {
                     step="0.05"
                     value={perspective}
                     onChange={(e) => setPerspective(Number(e.target.value))}
+                    onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
+                    onPointerUp={() => commit(dragStartRef.current ?? undefined)}
+                    onKeyUp={() => commit()}
                   />
                   <span className="param-value">{perspective.toFixed(2)}</span>
                 </div>
@@ -963,6 +1074,36 @@ export default function App() {
                 </button>
               </>
             )}
+            {/* 光照控制：方位角 + 强度，解决背光照片不自然 */}
+            <div className="param-row">
+              <label>光照方向</label>
+              <input
+                type="range"
+                min="-90"
+                max="90"
+                value={lightAzimuth}
+                onChange={(e) => setLightAzimuth(Number(e.target.value))}
+                onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
+                onPointerUp={() => commit(dragStartRef.current ?? undefined)}
+                onKeyUp={() => commit()}
+              />
+              <span className="param-value">{lightAzimuth}°</span>
+            </div>
+            <div className="param-row">
+              <label>光照强度</label>
+              <input
+                type="range"
+                min="0.3"
+                max="2.5"
+                step="0.1"
+                value={lightIntensity}
+                onChange={(e) => setLightIntensity(Number(e.target.value))}
+                onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
+                onPointerUp={() => commit(dragStartRef.current ?? undefined)}
+                onKeyUp={() => commit()}
+              />
+              <span className="param-value">{lightIntensity.toFixed(1)}</span>
+            </div>
           </section>
 
           <section className="panel-section">
@@ -990,6 +1131,18 @@ export default function App() {
           </section>
 
           <section className="panel-section">
+            <div className="param-row">
+              <label>导出分辨率</label>
+              <select
+                value={exportScale}
+                onChange={(e) => setExportScale(Number(e.target.value))}
+                className="preset-select"
+              >
+                <option value={1}>1x（原图）</option>
+                <option value={2}>2x（高清）</option>
+                <option value={4}>4x（超清）</option>
+              </select>
+            </div>
             <button
               className="export-btn"
               disabled={!photoUrl || !signCanvas}
@@ -999,6 +1152,26 @@ export default function App() {
             </button>
             {!photoUrl && <p className="hint">请先上传建筑照片</p>}
             {!signCanvas && <p className="hint">请先上传 SVG 标识</p>}
+          </section>
+
+          <section className="panel-section">
+            <div className="undo-redo-row">
+              <button
+                className="text-btn"
+                onClick={undo}
+                disabled={historyRef.current.index <= 0}
+              >
+                ↶ 撤销
+              </button>
+              <button
+                className="text-btn"
+                onClick={redo}
+                disabled={historyRef.current.index >= historyRef.current.stack.length - 1}
+              >
+                ↷ 重做
+              </button>
+            </div>
+            <p className="hint">Ctrl/⌘+Z 撤销，Ctrl/⌘+Shift+Z 或 Ctrl+Y 重做</p>
           </section>
         </div>
       </div>
