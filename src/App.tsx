@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { renderSignToCanvas, renderImageToCanvas } from './utils/renderSign'
 import { pdfFileToImage } from './utils/pdfToImage'
-import { PRESETS, type SignPreset } from './utils/svgToMesh'
+import { PRESETS, type SignPreset, detectSvgLayers } from './utils/svgToMesh'
 import { warpPerspective, type Point } from './utils/perspectiveWarp'
 import { compositeImage, downloadCanvas } from './utils/composite'
 
@@ -160,9 +160,13 @@ function sampleAverageColor(img: HTMLImageElement): string | null {
 }
 
 const SAMPLE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 80">
-  <rect x="5" y="5" width="190" height="70" rx="8" fill="none" stroke="#e74c3c" stroke-width="3"/>
-  <text x="100" y="52" font-family="Arial,sans-serif" font-size="36" font-weight="bold"
-        text-anchor="middle" fill="#e74c3c">LOGO</text>
+  <g id="底板">
+    <rect x="5" y="5" width="190" height="70" rx="10" fill="#2c3e50"/>
+  </g>
+  <g id="文字">
+    <text x="100" y="52" font-family="Arial,sans-serif" font-size="36" font-weight="bold"
+          text-anchor="middle" fill="#e74c3c">LOGO</text>
+  </g>
 </svg>`
 
 type DragState = {
@@ -183,6 +187,11 @@ export default function App() {
   const [lockRatio, setLockRatio] = useState(false)
   const [preset, setPreset] = useState<SignPreset>('matte')
   const [perspective, setPerspective] = useState<number>(0)
+  // 立体分层：检测到多层 SVG 时启用，沿 Z 堆叠成浮雕；层间距控制浮雕间隙
+  const [layered, setLayered] = useState(false)
+  const [layerGap, setLayerGap] = useState(10)
+  // 高清边缘：2x 超采样渲染后经 warp 下采样，边缘更干净（质量设置，不计入撤销历史）
+  const [aa, setAa] = useState(true)
   const [ambientColor, setAmbientColor] = useState<string>('')
   const [signCanvas, setSignCanvas] = useState<HTMLCanvasElement | null>(null)
   const [isRendering, setIsRendering] = useState(false)
@@ -242,6 +251,16 @@ export default function App() {
   const svgAspect = useMemo(() => getSvgAspectRatio(svgString), [svgString])
   const signAspect = svgAspect ?? imageAspect
 
+  // 检测 SVG 图层数（顶层 <g> / 可绘制元素），用于立体分层开关
+  const layerCount = useMemo(
+    () => (svgString ? detectSvgLayers(svgString)?.length ?? 0 : 0),
+    [svgString],
+  )
+  // 上传新的多层 SVG 时自动开启分层；单/无图层时关闭
+  useEffect(() => {
+    setLayered(layerCount > 1)
+  }, [layerCount])
+
   // === 光照 / 导出分辨率控制 ===
   const [lightAzimuth, setLightAzimuth] = useState<number>(0)
   const [lightIntensity, setLightIntensity] = useState<number>(1)
@@ -258,11 +277,13 @@ export default function App() {
     perspective: number
     lightAzimuth: number
     lightIntensity: number
+    layered: boolean
+    layerGap: number
   }
   const editRef = useRef<EditState>({
     points: INITIAL_POINTS,
     depth, color, stretch, lockRatio, preset, perspective,
-    lightAzimuth: 0, lightIntensity: 1,
+    lightAzimuth: 0, lightIntensity: 1, layered, layerGap,
   })
   const pointsRef = useRef<[Point, Point, Point, Point]>(INITIAL_POINTS)
   const dragStartRef = useRef<EditState | null>(null)
@@ -274,9 +295,9 @@ export default function App() {
     editRef.current = {
       points: pointsRef.current,
       depth, color, stretch, lockRatio, preset, perspective,
-      lightAzimuth, lightIntensity,
+      lightAzimuth, lightIntensity, layered, layerGap,
     }
-  }, [points, depth, color, stretch, lockRatio, preset, perspective, lightAzimuth, lightIntensity])
+  }, [points, depth, color, stretch, lockRatio, preset, perspective, lightAzimuth, lightIntensity, layered, layerGap])
 
   const applyState = useCallback((s: EditState) => {
     setPoints(s.points)
@@ -288,6 +309,8 @@ export default function App() {
     setPerspective(s.perspective)
     setLightAzimuth(s.lightAzimuth)
     setLightIntensity(s.lightIntensity)
+    setLayered(s.layered)
+    setLayerGap(s.layerGap)
   }, [])
 
   const commit = useCallback((before?: EditState) => {
@@ -328,19 +351,21 @@ export default function App() {
     // 拖动滑块等高频参数变化会连续触发，用 250ms 防抖合并为一次渲染，避免卡顿。
     const run = (): Promise<HTMLCanvasElement> =>
       svgString
-        ? renderSignToCanvas(svgString, depth, 512, {
+        ? renderSignToCanvas(svgString, depth, aa ? 1024 : 512, {
             stretch,
             color,
             preset,
             ambientColor: ambientColor || undefined,
             lightAzimuth,
             lightIntensity,
+            layered: layerCount > 1 ? layered : false,
+            layerGap,
           })
         : new Promise<HTMLCanvasElement>((resolve) => {
             const img = new Image()
             img.onload = () => {
               setImageAspect(img.width / img.height)
-              renderImageToCanvas(img, depth, 512, {
+              renderImageToCanvas(img, depth, aa ? 1024 : 512, {
                 stretch,
                 color,
                 preset,
@@ -380,7 +405,7 @@ export default function App() {
       window.clearTimeout(timer)
       cancelled = true
     }
-  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity])
+  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity, layered, layerGap, aa, layerCount])
 
   // === 2. 实时预览合成 ===
   const updatePreview = useCallback(() => {
@@ -841,7 +866,7 @@ export default function App() {
   const handleExport = () => {
     const img = photoRef.current
     if (!img || !signCanvas) return
-    const canvas = compositeImage(img, signCanvas, points, displaySize.w, displaySize.h, exportScale)
+    const canvas = compositeImage(img, signCanvas, points, displaySize.w, displaySize.h, exportScale, depth, lightAzimuth)
     downloadCanvas(canvas, `广告标识安装效果图_${exportScale}x.png`)
   }
 
@@ -1046,6 +1071,48 @@ export default function App() {
                   </option>
                 ))}
               </select>
+            </div>
+            {layerCount > 1 && (
+              <>
+                <div className="param-row">
+                  <label>立体分层</label>
+                  <input
+                    type="checkbox"
+                    checked={layered}
+                    onChange={(e) => { setLayered(e.target.checked); commit() }}
+                  />
+                  <span className="param-value">{layered ? '开' : '关'}</span>
+                </div>
+                {layered && (
+                  <div className="param-row">
+                    <label>层间距</label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="40"
+                      step="1"
+                      value={layerGap}
+                      onChange={(e) => setLayerGap(Number(e.target.value))}
+                      onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
+                      onPointerUp={() => commit(dragStartRef.current ?? undefined)}
+                      onKeyUp={() => commit()}
+                    />
+                    <span className="param-value">{layerGap}</span>
+                  </div>
+                )}
+                <p className="hint layer-note">
+                  检测到 {layerCount} 个图层，分层后沿厚度方向堆叠成立体浮雕（底板 + 上层图案）
+                </p>
+              </>
+            )}
+            <div className="param-row">
+              <label>高清边缘</label>
+              <input
+                type="checkbox"
+                checked={aa}
+                onChange={(e) => setAa(e.target.checked)}
+              />
+              <span className="param-value">{aa ? '开' : '关'}</span>
             </div>
             <div className="param-row">
               <label>锁定 SVG 比例</label>

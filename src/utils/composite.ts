@@ -17,6 +17,8 @@ export function compositeImage(
   displayWidth: number,
   displayHeight: number,
   outputScale: number = 1,
+  shadowDepth: number = 20,
+  shadowAzimuth: number = 0,
 ): HTMLCanvasElement {
   const outW = Math.max(1, Math.round(photoImage.naturalWidth * outputScale))
   const outH = Math.max(1, Math.round(photoImage.naturalHeight * outputScale))
@@ -47,14 +49,21 @@ export function compositeImage(
   const tctx = tmp.getContext('2d')!
   warpPerspective(tctx, signCanvas, signCanvas.width, signCanvas.height, dstPoints)
 
-  // 柔和接触阴影（偏移 + 高斯模糊），让标识"贴"在墙上有立体感
-  const shadowBlur = Math.max(2, canvas.width * 0.006)
-  const shadowOff = Math.max(1, canvas.width * 0.002)
+  // 柔和接触阴影：让标识"贴"在墙上有立体感。
+  // 阴影方向跟随光照方位角（背光方向偏移），偏移/模糊随标识厚度增大——
+  // 越厚的立体标识，在墙上的投影越大越虚，与 3D 厚度、光照方向物理一致。
+  const depthNorm = Math.min(1, shadowDepth / 80)
+  const baseOff = Math.max(1, canvas.width * 0.002)
+  const off = baseOff * (0.6 + depthNorm)
+  const az = (shadowAzimuth * Math.PI) / 180
+  const shadowOffX = -Math.sin(az) * off * 1.3 // 光从左侧(az<0)来 → 影向右
+  const shadowOffY = off * (1 + depthNorm * 0.8) // 重力向下，厚度加成
+  const shadowBlur = Math.max(2, canvas.width * 0.006 * (0.6 + depthNorm))
   ctx.save()
   ctx.shadowColor = 'rgba(0,0,0,0.45)'
   ctx.shadowBlur = shadowBlur
-  ctx.shadowOffsetX = shadowOff
-  ctx.shadowOffsetY = shadowOff * 1.5
+  ctx.shadowOffsetX = shadowOffX
+  ctx.shadowOffsetY = shadowOffY
   ctx.drawImage(tmp, 0, 0)
   ctx.restore()
 

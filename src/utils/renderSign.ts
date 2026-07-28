@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { svgToGroup, normalizeGroup, PRESETS, type SignPreset } from './svgToMesh'
+import { svgToGroup, normalizeGroup, PRESETS, type SignPreset, detectSvgLayers, type SvgBBox } from './svgToMesh'
 
 /**
  * Three.js 离屏渲染：将标识渲染为带 3D 厚度 + 光照 + 材质质感的透明背景 Canvas
@@ -17,6 +17,10 @@ export interface RenderOptions {
   lightAzimuth?: number
   /** 主光强度系数，1 为默认，范围约 0.3~2.5 */
   lightIntensity?: number
+  /** 立体分层：将 SVG 顶层 <g>/可绘制元素按图层分别拉伸并沿 Z 堆叠成浮雕 */
+  layered?: boolean
+  /** 层间距：相邻图层在 Z 方向的间隙（单位与 depth 一致），越大浮雕越明显 */
+  layerGap?: number
 }
 
 /** 渲染核心所需的公共参数 */
@@ -140,7 +144,31 @@ export async function renderSignToCanvas(
   renderSize: number = 512,
   opts: RenderOptions = {},
 ): Promise<HTMLCanvasElement> {
-  const { stretch = false, color = '#dddddd', preset = 'matte', ambientColor, lightAzimuth, lightIntensity } = opts
+  const {
+    stretch = false,
+    color = '#dddddd',
+    preset = 'matte',
+    ambientColor,
+    lightAzimuth,
+    lightIntensity,
+    layered = false,
+    layerGap = 10,
+  } = opts
+
+  const overrideColor = color && color !== '#dddddd' ? new THREE.Color(color) : null
+
+  // 立体分层：检测 SVG 顶层图层，逐层拉伸 + Z 轴堆叠成浮雕
+  const layers = layered ? detectSvgLayers(svgString) : null
+  if (layers && layers.length > 1) {
+    return renderLayeredToCanvas(layers, depth, renderSize, {
+      preset,
+      ambientColor,
+      lightAzimuth,
+      lightIntensity,
+      layerGap,
+      overrideColor,
+    })
+  }
 
   // 创建标识 Group（归一化到最大边长 = 2，居中于原点）
   // 拉伸铺满时关闭倒角，避免倒角外扩导致正面无法精确填满画布
@@ -161,10 +189,9 @@ export async function renderSignToCanvas(
     group.position.sub(recenterCenter)
   }
 
-  const overrideColor = color && color !== '#dddddd' ? new THREE.Color(color) : null
   let mapTex: THREE.Texture | null = null
   if (!overrideColor) {
-    const raster = await rasterizeSvg(svgString, group.userData.svgBBox as any, renderSize)
+    const raster = await rasterizeSvg(svgString, group.userData.svgBBox as SvgBBox, renderSize)
     if (raster) mapTex = makeTexture(raster)
   }
 
@@ -194,6 +221,115 @@ export async function renderSignToCanvas(
       } else if (mapTex) {
         face.map = mapTex
         face.color = new THREE.Color(0xffffff)
+      }
+
+      if (presetDef.emissiveIntensity > 0) {
+        face.emissive = overrideColor ?? face.color.clone()
+        face.emissiveIntensity = presetDef.emissiveIntensity
+      } else {
+        face.emissiveIntensity = 0
+      }
+
+      face.needsUpdate = true
+      side.needsUpdate = true
+    },
+  })
+}
+
+/**
+ * 立体分层渲染：把每一层 SVG 单独拉伸为 3D 几何体，沿 Z 轴按 (depth + layerGap) 堆叠，
+ * 形成「多层浮雕」立体标识（类似亚克力分层字 / 底板 + 发光面 + 装饰层）。
+ *
+ * - 每层使用 svgToGroup 单独解析与拉伸，UV 与各自光栅化贴图严格对齐，多色分层正确显色。
+ * - 整体归一化到最大边长 = 2 居中，下游 warp / 阴影 / 导出完全复用同一张 signCanvas。
+ * - 若用户设了统一颜色（overrideColor），所有层用该色，跳过逐层贴图。
+ */
+async function renderLayeredToCanvas(
+  layers: { id: string; label: string; svg: string }[],
+  depth: number,
+  renderSize: number,
+  opts: {
+    preset: SignPreset
+    ambientColor?: string
+    lightAzimuth?: number
+    lightIntensity?: number
+    layerGap: number
+    overrideColor: THREE.Color | null
+  },
+): Promise<HTMLCanvasElement> {
+  const { preset, ambientColor, lightAzimuth, lightIntensity, layerGap, overrideColor } = opts
+
+  const parent = new THREE.Group()
+  const layerGroups: { sub: THREE.Group; svg: string }[] = []
+
+  layers.forEach((ly, i) => {
+    // 分层模式固定带倒角，浮雕侧面更真实；每层沿 +Z 堆叠
+    const sub = svgToGroup(ly.svg, depth, true)
+    sub.position.z = i * (depth + layerGap)
+    parent.add(sub)
+    layerGroups.push({ sub, svg: ly.svg })
+  })
+
+  // 整体归一化：把整座浮雕缩放居中到原点（仅按 xy 平面尺寸，z 厚度不并入视锥）
+  normalizeGroup(parent, 2)
+
+  // 逐层光栅化贴图（仅在不使用统一颜色时），挂到各子组的 userData.layerTex
+  const extraDispose: THREE.Texture[] = []
+  if (!overrideColor) {
+    for (const lg of layerGroups) {
+      const bbox = lg.sub.userData.svgBBox as SvgBBox | undefined
+      if (!bbox) continue
+      const raster = await rasterizeSvg(lg.svg, bbox, renderSize)
+      if (raster) {
+        const tex = makeTexture(raster)
+        ;(lg.sub.userData as Record<string, unknown>).layerTex = tex
+        extraDispose.push(tex)
+      }
+    }
+  }
+
+  return renderGroupToCanvas({
+    group: parent,
+    renderSize,
+    ambientColor,
+    preset,
+    lightAzimuth,
+    lightIntensity,
+    extraDispose,
+    applyMaterial: (mesh) => {
+      // 向上回溯找到所属图层的贴图（userData.layerTex），找不到则用统一色
+      let o: THREE.Object3D | null = mesh
+      let tex: THREE.Texture | null = null
+      while (o) {
+        const t = (o.userData as Record<string, unknown>).layerTex
+        if (t) {
+          tex = t as THREE.Texture
+          break
+        }
+        o = o.parent
+      }
+
+      const mats = mesh.material as THREE.MeshStandardMaterial[]
+      const face = mats[0]
+      const side = mats[1]
+      const presetDef = PRESETS[preset] ?? PRESETS.matte
+
+      face.metalness = presetDef.metalness
+      face.roughness = presetDef.roughness
+      side.metalness = presetDef.metalness * 0.7
+      side.roughness = Math.min(1, presetDef.roughness + 0.15)
+
+      if (overrideColor) {
+        face.map = null
+        face.color = overrideColor
+        side.color = overrideColor
+      } else if (tex) {
+        face.map = tex
+        face.color = new THREE.Color(0xffffff)
+      } else {
+        // 该层贴图缺失：回退纯色，避免整片透明
+        face.map = null
+        face.color = new THREE.Color(0xcccccc)
       }
 
       if (presetDef.emissiveIntensity > 0) {
