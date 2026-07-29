@@ -696,13 +696,13 @@ export default function App() {
         panY: midY - ps.stageCy - (ps.focalY - displaySize.h / 2) * z2,
       })
     } else if (panStartRef.current && pointersRef.current.size === 1) {
-      const dx = e.clientX - panStartRef.current.x
-      const dy = e.clientY - panStartRef.current.y
-      setView((v) => ({
-        ...v,
-        panX: panStartRef.current!.panX + dx,
-        panY: panStartRef.current!.panY + dy,
-      }))
+      // 注意：必须先把 ref 快照成局部值再传给更新器。
+      // React 的函数式更新器可能延迟到下一次渲染时才执行，
+      // 若此时指针已抬起、panStartRef 被置 null，更新器内读 .panX 会崩溃。
+      const ps = panStartRef.current
+      const nextPanX = ps.panX + (e.clientX - ps.x)
+      const nextPanY = ps.panY + (e.clientY - ps.y)
+      setView((v) => ({ ...v, panX: nextPanX, panY: nextPanY }))
     }
     // hover 反馈：在标识区域内显示 move 光标，提示可整体拖动
     if (!layerMoveRef.current && !panStartRef.current && pointersRef.current.size <= 1) {
