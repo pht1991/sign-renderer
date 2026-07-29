@@ -525,3 +525,49 @@ body {
   flex: 1;
   text-align: center;
 }
+
+/* === 统一滚动条样式（暗色主题，与面板/边框/强调色一致） ===
+   作用范围：右侧控制面板（桌面）与移动端主布局（竖向滚动）。
+   桌面端画布区/页面根均为 overflow:hidden，不出现滚动条。 */
+.control-panel,
+.main-layout {
+  /* Firefox 细滚动条 */
+  scrollbar-width: thin;
+  scrollbar-color: #3a3f4b #15181f;
+}
+
+/* WebKit（Chrome / Edge / Safari）自定义滚动条 */
+.control-panel::-webkit-scrollbar,
+.main-layout::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.control-panel::-webkit-scrollbar-track,
+.main-layout::-webkit-scrollbar-track {
+  background: #15181f;
+  border-radius: 4px;
+}
+
+.control-panel::-webkit-scrollbar-thumb,
+.main-layout::-webkit-scrollbar-thumb {
+  background: #3a3f4b; /* 比轨道略亮，保证暗色主题内可见 */
+  border: 2px solid #15181f; /* 同色描边形成视觉留白 */
+  border-radius: 4px;
+}
+
+.control-panel::-webkit-scrollbar-thumb:hover,
+.main-layout::-webkit-scrollbar-thumb:hover {
+  background: #3b82f6; /* hover 用品牌蓝，呼应强调色 */
+}
+
+.control-panel::-webkit-scrollbar-thumb:active,
+.main-layout::-webkit-scrollbar-thumb:active {
+  background: #2563eb;
+}
+
+/* 滚动条转角（同时出现横竖滚动条时）与轨道同色 */
+.control-panel::-webkit-scrollbar-corner,
+.main-layout::-webkit-scrollbar-corner {
+  background: #15181f;
+}
