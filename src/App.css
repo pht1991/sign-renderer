@@ -11,7 +11,9 @@ body {
 }
 
 .app {
-  min-height: 100vh;
+  /* 固定视口高度并裁剪溢出：滚动条只出现在右侧面板内部，不产生页面级滚动 */
+  height: 100vh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -36,6 +38,8 @@ body {
   flex: 1;
   gap: 0;
   overflow: hidden;
+  /* flex 子项默认 min-height:auto 会被内容撑破，导致父级出滚动条 */
+  min-height: 0;
 }
 
 /* === 左侧画布区 === */
@@ -323,14 +327,25 @@ body {
   margin-top: 6px;
 }
 
-/* 渲染加载态：spinner 动画 + 文字，提升大 SVG 渲染时的反馈感 */
+/* 渲染加载态：悬浮 toast（固定定位，不占布局空间，避免出现时推挤面板内容） */
 .loading-row {
+  position: fixed;
+  right: 336px; /* 面板宽 320 + 边距，悬浮在画布区右下角 */
+  bottom: 16px;
+  z-index: 50;
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 12px;
   color: #f59e0b;
-  margin-top: 6px;
+  background: rgba(26, 29, 36, 0.92);
+  border: 1px solid #2a2e38;
+  border-radius: 8px;
+  padding: 8px 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  pointer-events: none;
 }
 
 .spinner {
@@ -473,6 +488,12 @@ body {
 
   .param-row label {
     min-width: 56px;
+  }
+
+  /* 移动端面板全宽：toast 靠右下角悬浮 */
+  .loading-row {
+    right: 16px;
+    bottom: 16px;
   }
 
   .drag-point {
