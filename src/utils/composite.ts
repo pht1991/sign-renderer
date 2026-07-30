@@ -1,5 +1,25 @@
 import { warpPerspective, type Point } from './perspectiveWarp'
 
+// 导出像素上限：避免 4x 导出大照片时 canvas 超过浏览器上限（约 16384 边）或爆内存
+export const MAX_EXPORT_DIM = 8000
+export const MAX_EXPORT_PIXELS = 64_000_000
+
+/**
+ * 计算安全的导出倍率：在不超出最大边长与最大像素总量的前提下尽量接近 requested。
+ * 返回 [0, requested] 之间的有效倍率。
+ */
+export function safeExportScale(
+  natW: number,
+  natH: number,
+  requested: number,
+): number {
+  if (natW <= 0 || natH <= 0) return Math.max(0.1, requested)
+  let s = requested
+  s = Math.min(s, MAX_EXPORT_DIM / natW, MAX_EXPORT_DIM / natH)
+  s = Math.min(s, Math.sqrt(MAX_EXPORT_PIXELS / (natW * natH)))
+  return Math.max(0.1, s)
+}
+
 /**
  * 合成最终效果图：建筑照片底图 + 3D标识透视贴合
  *
@@ -8,6 +28,7 @@ import { warpPerspective, type Point } from './perspectiveWarp'
  * @param points 四个标记点 [左上, 右上, 右下, 左下]（基于照片显示尺寸的坐标）
  * @param displayWidth 照片显示宽度
  * @param displayHeight 照片显示高度
+ * @param outputScale 期望导出倍率（内部会按 safeExportScale 限幅，不抛错）
  * @returns 合成后的 Canvas
  */
 export function compositeImage(
@@ -20,8 +41,14 @@ export function compositeImage(
   shadowDepth: number = 20,
   shadowAzimuth: number = 0,
 ): HTMLCanvasElement {
-  const outW = Math.max(1, Math.round(photoImage.naturalWidth * outputScale))
-  const outH = Math.max(1, Math.round(photoImage.naturalHeight * outputScale))
+  // 双保险：即便调用方未限幅，这里也保证不超出画布上限
+  const scale = safeExportScale(
+    photoImage.naturalWidth,
+    photoImage.naturalHeight,
+    outputScale,
+  )
+  const outW = Math.max(1, Math.round(photoImage.naturalWidth * scale))
+  const outH = Math.max(1, Math.round(photoImage.naturalHeight * scale))
   const canvas = document.createElement('canvas')
   canvas.width = outW
   canvas.height = outH

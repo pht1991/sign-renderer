@@ -3,7 +3,7 @@ import { renderSignToCanvas, renderImageToCanvas } from './utils/renderSign'
 import { pdfFileToImage } from './utils/pdfToImage'
 import { PRESETS, type SignPreset, detectSvgLayers } from './utils/svgToMesh'
 import { warpPerspective, type Point } from './utils/perspectiveWarp'
-import { compositeImage, downloadCanvas } from './utils/composite'
+import { compositeImage, downloadCanvas, safeExportScale } from './utils/composite'
 
 /**
  * 从 SVG 的 viewBox / width / height 中提取宽高比
@@ -159,6 +159,87 @@ function sampleAverageColor(img: HTMLImageElement): string | null {
   }
 }
 
+/**
+ * 四边形合法性校验：返回 null 表示有效，否则返回错误文案。
+ * 用于导出前兜底——四点拖乱 / 自交会导致 homography 退化、合成崩溃。
+ */
+function quadArea(pts: [Point, Point, Point, Point]): number {
+  let area = 0
+  for (let i = 0; i < 4; i++) {
+    const a = pts[i]
+    const b = pts[(i + 1) % 4]
+    area += a.x * b.y - b.x * a.y
+  }
+  return Math.abs(area) / 2
+}
+
+function isQuadValid(pts: [Point, Point, Point, Point]): string | null {
+  if (quadArea(pts) < 100) {
+    return '四点区域过小，请把四个角点拖开成合适的矩形后再导出'
+  }
+  // TL/TR/BR/BL 顺序下相邻边叉积应同号；出现异号即自交 / 顺序错乱
+  let sign = 0
+  for (let i = 0; i < 4; i++) {
+    const a = pts[i]
+    const b = pts[(i + 1) % 4]
+    const c = pts[(i + 2) % 4]
+    const cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+    if (Math.abs(cross) > 1) {
+      const s = cross > 0 ? 1 : -1
+      if (sign === 0) sign = s
+      else if (s !== sign) {
+        return '四个角点顺序错乱（出现交叉），请调整回左上 / 右上 / 右下 / 左下'
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * 根据照片亮度与左右亮暗分布，自动建议光照方向与强度（P2 光照匹配收尾）。
+ * 暗照片需要更强主光；亮侧即光源侧，方位角朝该侧。
+ */
+function analyzeLighting(img: HTMLImageElement): { azimuth: number; intensity: number } | null {
+  try {
+    const n = 32
+    const c = document.createElement('canvas')
+    c.width = n
+    c.height = n
+    const ctx = c.getContext('2d')
+    if (!ctx) return null
+    ctx.drawImage(img, 0, 0, n, n)
+    const data = ctx.getImageData(0, 0, n, n).data
+    let total = 0
+    let left = 0
+    let right = 0
+    let leftN = 0
+    let rightN = 0
+    const half = Math.floor(n / 2)
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const i = (y * n + x) * 4
+        const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]
+        total += lum
+        if (x < half) {
+          left += lum
+          leftN++
+        } else {
+          right += lum
+          rightN++
+        }
+      }
+    }
+    const avg = total / (n * n)
+    const leftAvg = left / leftN
+    const rightAvg = right / rightN
+    const azimuth = rightAvg >= leftAvg ? 30 : -30
+    const intensity = avg < 70 ? 1.9 : avg < 130 ? 1.4 : 1.0
+    return { azimuth, intensity }
+  } catch {
+    return null
+  }
+}
+
 // 示例 LOGO：双图层（底板 + 文字）。文字必须用 <path> 而非 <text>——
 // Three.js SVGLoader 无法把 <text> 拉伸成 3D 几何，分层模式下会整层消失。
 const SAMPLE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 80">
@@ -199,6 +280,7 @@ export default function App() {
   const [ambientColor, setAmbientColor] = useState<string>('')
   const [signCanvas, setSignCanvas] = useState<HTMLCanvasElement | null>(null)
   const [isRendering, setIsRendering] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [photoLoaded, setPhotoLoaded] = useState(false)
   const [showGrid, setShowGrid] = useState(false)
   const [hoverIdx, setHoverIdx] = useState<number | null>(null)
@@ -215,6 +297,8 @@ export default function App() {
   const innerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState>(null)
   const signGridRef = useRef<HTMLCanvasElement | null>(null)
+  // 预览重绘 RAF 句柄：合并高频拖拽时的重绘调用，避免每帧重复 warp 卡顿
+  const rafRef = useRef<number | null>(null)
   // 整体移动图层状态：按下时记录起始图像坐标与原始四点快照，移动时整体平移
   const layerMoveRef = useRef<{
     startImg: { x: number; y: number }
@@ -412,7 +496,7 @@ export default function App() {
   }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity, layered, layerGap, aa, layerCount])
 
   // === 2. 实时预览合成 ===
-  const updatePreview = useCallback(() => {
+  const drawOverlay = useCallback(() => {
     const overlay = overlayRef.current
     const img = photoRef.current
     if (!overlay || !img || !displaySize.w || !signCanvas) return
@@ -446,9 +530,23 @@ export default function App() {
     }
   }, [signCanvas, displaySize, points, showGrid])
 
+  // 用 RAF 合并高频重绘：拖拽四点 / 缩放时每帧只重绘一次，避免重复 warp 卡顿
+  const updatePreview = useCallback(() => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    rafRef.current = requestAnimationFrame(drawOverlay)
+  }, [drawOverlay])
+
   useEffect(() => {
     updatePreview()
   }, [updatePreview])
+
+  // 卸载时取消未执行的重绘帧，避免对卸载组件 setState / 访问已释放节点
+  useEffect(
+    () => () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    },
+    [],
+  )
 
   // === 3. 照片加载后初始化点位 ===
   const onPhotoLoad = () => {
@@ -490,6 +588,12 @@ export default function App() {
       { x: cx + rw / 2, y: cy + rh / 2 },
       { x: cx - rw / 2, y: cy + rh / 2 },
     ])
+    // 大尺寸照片提醒：导出高倍率时会自动降档，避免用户误以为能导出超清大图
+    if (img.naturalWidth > 4096 || img.naturalHeight > 4096) {
+      setPhotoWarn('照片尺寸较大（>4096px），导出 4x 时会自动降档以保证成功')
+    } else {
+      setPhotoWarn('')
+    }
     setPhotoLoaded(true)
   }
 
@@ -870,8 +974,56 @@ export default function App() {
   const handleExport = () => {
     const img = photoRef.current
     if (!img || !signCanvas) return
-    const canvas = compositeImage(img, signCanvas, points, displaySize.w, displaySize.h, exportScale, depth, lightAzimuth)
-    downloadCanvas(canvas, `广告标识安装效果图_${exportScale}x.png`)
+    // 边界：四点自交 / 区域过小会导致 homography 退化，先拦截避免合成崩溃
+    const quadErr = isQuadValid(points)
+    if (quadErr) {
+      setSignWarn(quadErr)
+      return
+    }
+    setExporting(true)
+    // 用 RAF 让「正在导出」toast 先渲染，再执行合成重活，避免 UI 假死
+    requestAnimationFrame(() => {
+      try {
+        // 边界 + 性能：大照片 4x 会超 canvas 上限，按安全倍率自动降档
+        const usedScale = safeExportScale(img.naturalWidth, img.naturalHeight, exportScale)
+        if (usedScale < exportScale - 1e-3) {
+          setSignWarn(
+            `照片较大，已自动将导出分辨率降至 ${usedScale.toFixed(1)}x 以保证导出成功`,
+          )
+        }
+        const canvas = compositeImage(
+          img,
+          signCanvas,
+          points,
+          displaySize.w,
+          displaySize.h,
+          usedScale,
+          depth,
+          lightAzimuth,
+        )
+        downloadCanvas(canvas, `广告标识安装效果图_${usedScale.toFixed(1)}x.png`)
+      } catch {
+        setSignWarn('导出失败，请降低导出分辨率或重新上传照片后重试')
+      } finally {
+        setExporting(false)
+      }
+    })
+  }
+
+  // 根据照片自动匹配光照方向与强度（P2 光照匹配收尾）
+  const autoMatchLight = () => {
+    const img = photoRef.current
+    if (!img) return
+    const r = analyzeLighting(img)
+    if (!r) return
+    setLightAzimuth(r.azimuth)
+    setLightIntensity(r.intensity)
+    commit({
+      ...editRef.current,
+      points: pointsRef.current,
+      lightAzimuth: r.azimuth,
+      lightIntensity: r.intensity,
+    })
   }
 
   // === 7. 按 SVG 比例适配四点（透视梯形） ===
@@ -1019,10 +1171,10 @@ export default function App() {
             {svgString && <p className="status-ok">SVG 标识已加载</p>}
             {signImageSrc && !svgString && <p className="status-ok">图片标识已加载</p>}
             {signWarn && <p className="status-warn">{signWarn}</p>}
-            {isRendering && (
+            {(isRendering || exporting) && (
               <div className="loading-row">
                 <span className="spinner" />
-                <span>正在渲染 3D 标识...</span>
+                <span>{exporting ? '正在导出效果图...' : '正在渲染 3D 标识...'}</span>
               </div>
             )}
           </section>
@@ -1107,6 +1259,11 @@ export default function App() {
                 <p className="hint layer-note">
                   检测到 {layerCount} 个图层，分层后沿厚度方向堆叠成立体浮雕（底板 + 上层图案）
                 </p>
+                {svgString.includes('<text') && (
+                  <p className="hint">
+                    提示：原 SVG 含文字（&lt;text&gt;），分层时该层可能无法拉伸，建议导出前将文字“创建轮廓 / 转曲为路径”
+                  </p>
+                )}
               </>
             )}
             <div className="param-row">
@@ -1185,6 +1342,9 @@ export default function App() {
               />
               <span className="param-value">{lightIntensity.toFixed(1)}</span>
             </div>
+            <button className="text-btn" onClick={autoMatchLight}>
+              自动匹配光照（基于照片）
+            </button>
           </section>
 
           <section className="panel-section">
