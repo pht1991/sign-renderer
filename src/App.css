@@ -276,9 +276,8 @@ body {
 .param-value {
   font-size: 13px;
   color: #d1d5db;
-  width: 36px;
-  text-align: right;
   font-family: monospace;
+  white-space: nowrap;
 }
 
 .point-legend {
