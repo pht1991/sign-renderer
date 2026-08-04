@@ -609,12 +609,14 @@ export default function App() {
     const cy = h / 2
     const rw = w * 0.35
     const rh = rw * 0.4
-    setPoints([
+    const initPoints: [Point, Point, Point, Point] = [
       { x: cx - rw / 2, y: cy - rh / 2 },
       { x: cx + rw / 2, y: cy - rh / 2 },
       { x: cx + rw / 2, y: cy + rh / 2 },
       { x: cx - rw / 2, y: cy + rh / 2 },
-    ])
+    ]
+    pointsRef.current = initPoints
+    setPoints(initPoints)
     // 大尺寸照片提醒：导出高倍率时会自动降档，避免用户误以为能导出超清大图
     if (img.naturalWidth > 4096 || img.naturalHeight > 4096) {
       setPhotoWarn('照片尺寸较大（>4096px），导出 4x 时会自动降档以保证成功')
@@ -1059,15 +1061,27 @@ export default function App() {
     })
   }
 
-  // === 7. 按 SVG 比例适配四点（透视梯形） ===
-  // 以当前四点中心为基准，按 SVG 比例生成标识区域；
+  // === 7. 按标识比例适配四点（透视梯形） ===
+  // 以当前四点中心为基准，按标识比例生成标识区域；
   // perspective > 0 时顶边收窄成梯形，模拟招牌在立面上的纵深透视，强透视招牌一键贴合。
-  const fitPointsToSvgRatio = () => {
-    if (!svgAspect || !displaySize.w || !displaySize.h) return
-    const cx = (points[0].x + points[1].x + points[2].x + points[3].x) / 4
-    const cy = (points[0].y + points[1].y + points[2].y + points[3].y) / 4
-    const baseW = Math.max(40, Math.min(displaySize.w * 0.5, displaySize.w))
-    const baseH = baseW / svgAspect
+  // 等比 contain 适配（对齐宽或对齐高）：哪个维度先到上限就停，始终保留标识原始比例，
+  // 避免非 1:1 标识被压扁 / 拉伸。
+  const fitPointsToSvgRatio = useCallback(() => {
+    if (!signAspect || !displaySize.w || !displaySize.h) return
+    const pts = pointsRef.current
+    const cx = (pts[0].x + pts[1].x + pts[2].x + pts[3].x) / 4
+    const cy = (pts[0].y + pts[1].y + pts[2].y + pts[3].y) / 4
+    const maxW = displaySize.w * 0.6
+    const maxH = displaySize.h * 0.6
+    // contain 适配：先按宽度铺满，若高度超限则改为按高度铺满（“对齐宽，或者高”）
+    let baseW = maxW
+    let baseH = baseW / signAspect
+    if (baseH > maxH) {
+      baseH = maxH
+      baseW = baseH * signAspect
+    }
+    baseW = Math.max(40, baseW)
+    baseH = Math.max(40, baseH)
     const topHalf = (baseW / 2) * (1 - perspective * 0.6) // 顶边随透视收窄
     const botHalf = baseW / 2
     setPoints([
@@ -1076,7 +1090,16 @@ export default function App() {
       { x: cx + botHalf, y: cy + baseH / 2 }, // 右下
       { x: cx - botHalf, y: cy + baseH / 2 }, // 左下
     ])
-  }
+  }, [signAspect, displaySize.w, displaySize.h, perspective])
+
+  // 上传标识后，按其原始比例自动适配四点（contain 适配，对齐宽或高），
+  // 避免非 1:1 标识被默认方形四点框压扁 / 拉伸。仅在标识比例变化（换图）时触发，
+  // 用户手动微调四点后不会被覆盖。
+  useEffect(() => {
+    if (signAspect && displaySize.w && displaySize.h && photoLoaded) {
+      fitPointsToSvgRatio()
+    }
+  }, [signAspect, displaySize.w, displaySize.h, photoLoaded, fitPointsToSvgRatio])
 
   const pointLabels = ['左上', '右上', '右下', '左下']
   const pointColors = ['#e74c3c', '#2ecc71', '#3498db', '#f39c12']

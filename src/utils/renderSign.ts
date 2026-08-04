@@ -44,11 +44,6 @@ interface CoreRenderInput {
    * 在 group 归一化后应用，保持正面（frontZ）不变、背面沿该方向偏移。
    */
   wallTilt?: { x: number; y: number }
-  /**
-   * 正面所在的局部 z 坐标（最靠近相机的 cap）。
-   * ExtrudeGeometry 正面在 z=0；BoxGeometry 正面（+z 面）在 z=depth/2。
-   */
-  frontZ?: number
   /** 标识厚度（同一单位体系下的滑块值），用于把厚度侧边错切幅度限制在合理比例 */
   depth?: number
   /** 由调用方根据自身的材质数组顺序，设置正面 / 侧面材质 */
@@ -66,9 +61,15 @@ interface CoreRenderInput {
 /**
  * 对 group 内所有 mesh 的顶点应用错切（shear），使厚度方向沿 wallTilt 倾斜。
  *
- * 变换保持「正面」（frontZ）的 XY 位置不变，让背面沿 +tilt 方向偏移 shearAmount，
- * 从而在 signCanvas 中形成“正面相对背面朝 +tilt 倾斜”的厚度边。
- * 经过 warp 后，该向量正好对齐墙面法线，使厚度贴合外立面。
+ * 变换保持「正面」（最靠近相机的 cap，即 z 最大处）的 XY 位置不变，让背面沿
+ * +tilt 方向偏移 shearAmount，从而在 signCanvas 中形成“正面相对背面朝 +tilt 倾斜”
+ * 的厚度边。经过 warp 后，该向量正好对齐墙面法线，使厚度贴合外立面。
+ *
+ * 正面由“全局最大 z”决定（而非调用方传入的固定 frontZ）：
+ * - SVG ExtrudeGeometry 朝向相机的 cap 在 z=depth；
+ * - 图片 BoxGeometry 平移后正面在 z=depth；
+ * - 分层模式最上层在最大 z。
+ * 之前错误地用 frontZ=0，把 SVG 的可见正面（z=depth）当成了背面去错切，导致标识偏移。
  *
  * 关键：shearAmount 必须是受控的小量（由调用方按标识平面尺寸 + 厚度比例给出），
  * 绝对不能用原始的 depth（默认 30，远大于归一化后的 2 单位标识）直接平移——
@@ -77,33 +78,36 @@ interface CoreRenderInput {
 function applyWallTilt(
   group: THREE.Group,
   tilt: { x: number; y: number },
-  frontZ = 0,
   shearAmount = 0,
 ): void {
+  // 全局 z 范围：相机在 +Z 侧，z 最大者为可见正面、必须保持不动。
+  let zMinG = Infinity
+  let zMaxG = -Infinity
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh && child.geometry?.attributes?.position) {
+      const pos = child.geometry.attributes.position
+      for (let i = 0; i < pos.count; i++) {
+        const z = pos.getZ(i)
+        if (z < zMinG) zMinG = z
+        if (z > zMaxG) zMaxG = z
+      }
+    }
+  })
+  if (!Number.isFinite(zMinG) || !Number.isFinite(zMaxG)) return
+
+  const frontZ = zMaxG
+  const span = (zMaxG - zMinG) || 1
+
   group.traverse((child) => {
     if (child instanceof THREE.Mesh && child.geometry) {
       const pos = child.geometry.attributes.position
       if (!pos) return
 
-      // 该几何体局部 z 的两个极值；正面在 frontZ，背面在另一个极值。
-      let zMin = Infinity
-      let zMax = -Infinity
-      for (let i = 0; i < pos.count; i++) {
-        const z = pos.getZ(i)
-        if (z < zMin) zMin = z
-        if (z > zMax) zMax = z
-      }
-      if (!Number.isFinite(zMin) || !Number.isFinite(zMax)) return
-
-      // 正面比例 0、背面比例 1：zr = (z - frontZ) / span。
-      const zBack = Math.abs(frontZ - zMax) < Math.abs(frontZ - zMin) ? zMin : zMax
-      const span = Math.abs(zBack - frontZ) || 1
-
       for (let i = 0; i < pos.count; i++) {
         const x = pos.getX(i)
         const y = pos.getY(i)
         const z = pos.getZ(i)
-        const zr = (z - frontZ) / span // 0 at front, 1 at back
+        const zr = (frontZ - z) / span // 正面=0（不动），背面=+1（偏移）
         pos.setXYZ(i, x + tilt.x * shearAmount * zr, y + tilt.y * shearAmount * zr, z)
       }
       pos.needsUpdate = true
@@ -118,7 +122,7 @@ function applyWallTilt(
  * SVG 标识与图片标识共用此函数，保证光感、材质、导出格式完全一致。
  */
 async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasElement> {
-  const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false, wallTilt, frontZ = 0, depth } = input
+  const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false, wallTilt, depth } = input
 
   // 1) 自然包围盒（仅 xy，忽略厚度 z），用于决定画布比例 + 统一取景。
   //    拉伸模式（stretch）下 group 已被拉成 2×2，naturalAspect≈1，标识按比例铺满画布；
@@ -139,7 +143,7 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   // 3) 厚度方向透视预倾斜：保持正面不变，背面沿 +wallTilt 偏移 clampedShear，
   //    使 warp 后的厚度边贴合墙面法线。仅影响背面投影，正面 logo 不受此变形。
   if (wallTilt) {
-    applyWallTilt(group, wallTilt, frontZ, clampedShear)
+    applyWallTilt(group, wallTilt, clampedShear)
   }
 
   const scene = new THREE.Scene()
@@ -587,7 +591,6 @@ export async function renderImageToCanvas(
     lightAzimuth,
     lightIntensity,
     wallTilt: opts.wallTilt,
-    frontZ: depth,
     depth,
     extraDispose: [imgTex],
     applyMaterial: (m) => {
