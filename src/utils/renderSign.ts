@@ -49,6 +49,8 @@ interface CoreRenderInput {
    * ExtrudeGeometry 正面在 z=0；BoxGeometry 正面（+z 面）在 z=depth/2。
    */
   frontZ?: number
+  /** 标识厚度（同一单位体系下的滑块值），用于把厚度侧边错切幅度限制在合理比例 */
+  depth?: number
   /** 由调用方根据自身的材质数组顺序，设置正面 / 侧面材质 */
   applyMaterial: (mesh: THREE.Mesh) => void
   /** 渲染完成后需要额外 dispose 的纹理（如贴图） */
@@ -64,40 +66,45 @@ interface CoreRenderInput {
 /**
  * 对 group 内所有 mesh 的顶点应用错切（shear），使厚度方向沿 wallTilt 倾斜。
  *
- * 变换保持「正面」（frontZ）的 XY 位置不变，让背面沿 -tilt 方向偏移，
+ * 变换保持「正面」（frontZ）的 XY 位置不变，让背面沿 +tilt 方向偏移 shearAmount，
  * 从而在 signCanvas 中形成“正面相对背面朝 +tilt 倾斜”的厚度边。
  * 经过 warp 后，该向量正好对齐墙面法线，使厚度贴合外立面。
+ *
+ * 关键：shearAmount 必须是受控的小量（由调用方按标识平面尺寸 + 厚度比例给出），
+ * 绝对不能用原始的 depth（默认 30，远大于归一化后的 2 单位标识）直接平移——
+ * 否则背面会被甩出画面、包围盒被撑大、相机视锥随之变大，正面标识被缩成极小（看着像“压扁”）。
  */
-function applyWallTilt(group: THREE.Group, tilt: { x: number; y: number }, frontZ = 0): void {
-  // 倾斜强度：墙面倾斜越明显，厚度边越要“倒下”。
-  // 1.0 为基准：正面相对背面的最大偏移量约等于厚度本身，贴合墙面又不夸张。
-  const TILT_SCALE = 1.0
-
+function applyWallTilt(
+  group: THREE.Group,
+  tilt: { x: number; y: number },
+  frontZ = 0,
+  shearAmount = 0,
+): void {
   group.traverse((child) => {
     if (child instanceof THREE.Mesh && child.geometry) {
       const pos = child.geometry.attributes.position
       if (!pos) return
 
-      // 找出该几何体 z 的极值，判断 frontZ 是最大 z（如 BoxGeometry +z 面）还是最小 z（如 ExtrudeGeometry cap）。
+      // 该几何体局部 z 的两个极值；正面在 frontZ，背面在另一个极值。
       let zMin = Infinity
       let zMax = -Infinity
       for (let i = 0; i < pos.count; i++) {
         const z = pos.getZ(i)
-        zMin = Math.min(zMin, z)
-        zMax = Math.max(zMax, z)
+        if (z < zMin) zMin = z
+        if (z > zMax) zMax = z
       }
       if (!Number.isFinite(zMin) || !Number.isFinite(zMax)) return
 
-      // 目标：正面（frontZ）相对背面朝 +tilt 方向偏移。
-      // 若 frontZ 是最大 z，背面 z-frontZ 为负，需用 + 号让背面朝 -tilt 走；
-      // 若 frontZ 是最小 z，背面 z-frontZ 为正，需用 - 号让背面朝 -tilt 走。
-      const sign = Math.abs(frontZ - zMax) < Math.abs(frontZ - zMin) ? 1 : -1
+      // 正面比例 0、背面比例 1：zr = (z - frontZ) / span。
+      const zBack = Math.abs(frontZ - zMax) < Math.abs(frontZ - zMin) ? zMin : zMax
+      const span = Math.abs(zBack - frontZ) || 1
 
       for (let i = 0; i < pos.count; i++) {
         const x = pos.getX(i)
         const y = pos.getY(i)
-        const z = pos.getZ(i) - frontZ
-        pos.setXYZ(i, x + sign * tilt.x * TILT_SCALE * z, y + sign * tilt.y * TILT_SCALE * z, z)
+        const z = pos.getZ(i)
+        const zr = (z - frontZ) / span // 0 at front, 1 at back
+        pos.setXYZ(i, x + tilt.x * shearAmount * zr, y + tilt.y * shearAmount * zr, z)
       }
       pos.needsUpdate = true
       child.geometry.computeBoundingBox()
@@ -111,29 +118,41 @@ function applyWallTilt(group: THREE.Group, tilt: { x: number; y: number }, front
  * SVG 标识与图片标识共用此函数，保证光感、材质、导出格式完全一致。
  */
 async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasElement> {
-  const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false, wallTilt, frontZ = 0 } = input
+  const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false, wallTilt, frontZ = 0, depth } = input
+
+  // 先按「正面平面」尺寸确定视锥基准与厚度错切幅度。
+  // 必须在错切前取，否则错切把背面沿厚度方向平移后，包围盒会被撑大，
+  // 正交相机视锥随之变大，正面标识被缩成画布中央极小一块（视觉上像「压扁 / 变形」）。
+  const preBox = new THREE.Box3().setFromObject(group)
+  const preSize = new THREE.Vector3()
+  preBox.getSize(preSize)
+  const frontSize = Math.max(preSize.x, preSize.y, 0.001)
+
+  // 厚度侧边在 signCanvas 空间里应只是标识正面边缘外的一小条投影，
+  // 不能用绝对 depth（默认 30，远大于归一化后的 2 单位标识）直接平移背面，
+  // 否则侧边会被甩出画面。用「标识平面尺寸 × 比例」表示，随厚度滑块线性放缩并设上限。
+  const depthFrac = Math.min(2, Math.max(0.15, (depth ?? 30) / 30))
+  const clampedShear = Math.min(frontSize * 0.12 * depthFrac, frontSize * 0.5)
 
   // 若提供了墙面透视倾斜，对厚度方向做预倾斜：
-  // 保持正面（frontZ）不变，背面沿 -wallTilt 偏移，使 warp 后的厚度边贴合墙面法线。
+  // 保持正面（frontZ）不变，背面沿 +wallTilt 偏移 clampedShear，使 warp 后的
+  // 厚度边贴合墙面法线，且偏移量受控不撑大画面。
   if (wallTilt) {
-    applyWallTilt(group, wallTilt, frontZ)
+    applyWallTilt(group, wallTilt, frontZ, clampedShear)
   }
 
   const scene = new THREE.Scene()
   scene.add(group)
 
-  // 正交相机：视锥精确匹配标识「平面尺寸」（xy），仅留 2% 余量防裁切。
+  // 正交相机：视锥精确匹配标识「平面尺寸」（xy）+ 厚度侧边余量，仅留少量余量防裁切。
   // 注意：视锥只看 xy，不能把 z（厚度）算进去，否则大厚度会把标识缩成画布中央的小图。
-  const bbox = new THREE.Box3().setFromObject(group)
-  const bboxSize = new THREE.Vector3()
-  bbox.getSize(bboxSize)
-  const sizeXY = Math.max(bboxSize.x, bboxSize.y, 0.001)
-  const halfSize = sizeXY * 0.51 * 1.02
+  // 关键：halfSize 以错切前的正面尺寸 frontSize 为基准，再加侧边余量，避免标识被缩小。
+  const halfSize = frontSize * 0.5 * 1.04 + clampedShear
   // 相机 z 位置必须位于标识「正面」之前：
   // 图片标识的贴图面在 +z（z = +depth/2），SVG 标识的图案 cap 在 z=0；
   // 若相机固定 z=10 而厚度较大（如默认 30），+z 面会落到相机背后被裁掉 → 图片看不见。
   // 因此相机按厚度方向后移，保证正面恒在相机前方，且远小于视锥尺寸不影响平面缩放。
-  const cameraZ = bboxSize.z / 2 + 5
+  const cameraZ = preSize.z / 2 + 5
   const camera = new THREE.OrthographicCamera(
     -halfSize, halfSize, halfSize, -halfSize,
     0.1, cameraZ + halfSize + 10,
@@ -307,6 +326,7 @@ export async function renderSignToCanvas(
     lightAzimuth,
     lightIntensity,
     wallTilt,
+    depth,
     extraDispose: mapTex ? [mapTex] : [],
     applyMaterial: (mesh) => {
       const mats = mesh.material as THREE.MeshStandardMaterial[]
@@ -544,6 +564,7 @@ export async function renderImageToCanvas(
     lightIntensity,
     wallTilt: opts.wallTilt,
     frontZ: depth,
+    depth,
     extraDispose: [imgTex],
     applyMaterial: (m) => {
       const presetDef = PRESETS[preset] ?? PRESETS.matte
