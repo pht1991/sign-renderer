@@ -120,23 +120,24 @@ function applyWallTilt(
 async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasElement> {
   const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false, wallTilt, frontZ = 0, depth } = input
 
-  // 先按「正面平面」尺寸确定视锥基准与厚度错切幅度。
-  // 必须在错切前取，否则错切把背面沿厚度方向平移后，包围盒会被撑大，
-  // 正交相机视锥随之变大，正面标识被缩成画布中央极小一块（视觉上像「压扁 / 变形」）。
+  // 1) 自然包围盒（仅 xy，忽略厚度 z），用于决定画布比例 + 统一取景。
+  //    拉伸模式（stretch）下 group 已被拉成 2×2，naturalAspect≈1，标识按比例铺满画布；
+  //    非拉伸模式天然保留标识真实比例（如 2.5:1 横向 LOGO）。
   const preBox = new THREE.Box3().setFromObject(group)
   const preSize = new THREE.Vector3()
   preBox.getSize(preSize)
-  const frontSize = Math.max(preSize.x, preSize.y, 0.001)
+  const natW = Math.max(preSize.x, 0.001)
+  const natH = Math.max(preSize.y, 0.001)
+  const naturalAspect = natW / natH
 
-  // 厚度侧边在 signCanvas 空间里应只是标识正面边缘外的一小条投影，
-  // 不能用绝对 depth（默认 30，远大于归一化后的 2 单位标识）直接平移背面，
-  // 否则侧边会被甩出画面。用「标识平面尺寸 × 比例」表示，随厚度滑块线性放缩并设上限。
+  // 2) 厚度侧边错切幅度：用「标识较小边 × 比例」表示，随厚度滑块放缩并设上限。
+  //    不能用较大边（之前写法会让超宽/超高标识的侧面被甩出画面、画布被撑爆、logo 被挤小）。
+  const minDim = Math.min(natW, natH)
   const depthFrac = Math.min(2, Math.max(0.15, (depth ?? 30) / 30))
-  const clampedShear = Math.min(frontSize * 0.12 * depthFrac, frontSize * 0.5)
+  const clampedShear = Math.min(minDim * 0.18 * depthFrac, minDim * 0.45)
 
-  // 若提供了墙面透视倾斜，对厚度方向做预倾斜：
-  // 保持正面（frontZ）不变，背面沿 +wallTilt 偏移 clampedShear，使 warp 后的
-  // 厚度边贴合墙面法线，且偏移量受控不撑大画面。
+  // 3) 厚度方向透视预倾斜：保持正面不变，背面沿 +wallTilt 偏移 clampedShear，
+  //    使 warp 后的厚度边贴合墙面法线。仅影响背面投影，正面 logo 不受此变形。
   if (wallTilt) {
     applyWallTilt(group, wallTilt, frontZ, clampedShear)
   }
@@ -144,28 +145,51 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   const scene = new THREE.Scene()
   scene.add(group)
 
-  // 正交相机：视锥精确匹配标识「平面尺寸」（xy）+ 厚度侧边余量，仅留少量余量防裁切。
-  // 注意：视锥只看 xy，不能把 z（厚度）算进去，否则大厚度会把标识缩成画布中央的小图。
-  // 关键：halfSize 以错切前的正面尺寸 frontSize 为基准，再加侧边余量，避免标识被缩小。
-  const halfSize = frontSize * 0.5 * 1.04 + clampedShear
+  // 4) 错切后重新取景：内容包围盒（xy），中心用于居中相机
+  const postBox = new THREE.Box3().setFromObject(group)
+  const postSize = new THREE.Vector3()
+  postBox.getSize(postSize)
+  const contentHalfW = Math.max(postSize.x, 0.001) / 2
+  const contentHalfH = Math.max(postSize.y, 0.001) / 2
+  const contentCenter = postBox.getCenter(new THREE.Vector3())
+
+  // 5) 画布尺寸：较长边 = renderSize，比例 = 标识自然比例。
+  //    标识在画布内占满、无 letterbox，warp 到四边形时才不会被非等比拉伸。
+  let canvasW: number
+  let canvasH: number
+  if (naturalAspect >= 1) {
+    canvasW = renderSize
+    canvasH = Math.max(1, Math.round(renderSize / naturalAspect))
+  } else {
+    canvasW = Math.max(1, Math.round(renderSize * naturalAspect))
+    canvasH = renderSize
+  }
+
+  // 6) 正交相机：保持「世界单位 → 像素」在 x/y 方向一致（uniform），
+  //    即相机视锥比例 == 画布比例 == naturalAspect，确保正面 logo 在画布上比例正确。
+  //    取能装下错切后内容、且比例 = naturalAspect 的最小半视锥（克制余量）。
+  const margin = 1.06
+  const halfW = Math.max(contentHalfW, contentHalfH * naturalAspect) * margin
+  const halfH = halfW / naturalAspect
+
   // 相机 z 位置必须位于标识「正面」之前：
   // 图片标识的贴图面在 +z（z = +depth/2），SVG 标识的图案 cap 在 z=0；
   // 若相机固定 z=10 而厚度较大（如默认 30），+z 面会落到相机背后被裁掉 → 图片看不见。
   // 因此相机按厚度方向后移，保证正面恒在相机前方，且远小于视锥尺寸不影响平面缩放。
   const cameraZ = preSize.z / 2 + 5
   const camera = new THREE.OrthographicCamera(
-    -halfSize, halfSize, halfSize, -halfSize,
-    0.1, cameraZ + halfSize + 10,
+    -halfW, halfW, halfH, -halfH,
+    0.1, cameraZ + halfW + 10,
   )
-  camera.position.set(0, 0, cameraZ)
-  camera.lookAt(0, 0, 0)
+  camera.position.set(contentCenter.x, contentCenter.y, cameraZ)
+  camera.lookAt(contentCenter.x, contentCenter.y, 0)
 
   const renderer = new THREE.WebGLRenderer({
     alpha: true,
     antialias: true,
     preserveDrawingBuffer: true,
   })
-  renderer.setSize(renderSize, renderSize)
+  renderer.setSize(canvasW, canvasH)
   renderer.setClearColor(0x000000, 0)
   renderer.setPixelRatio(1)
   if (enableShadow) {
@@ -231,10 +255,10 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
 
   renderer.render(scene, camera)
 
-  // 导出 canvas
+  // 导出 canvas：尺寸与渲染画布一致（跟随标识自然比例，非方形）
   const canvas = document.createElement('canvas')
-  canvas.width = renderSize
-  canvas.height = renderSize
+  canvas.width = canvasW
+  canvas.height = canvasH
   const ctx = canvas.getContext('2d')!
   ctx.drawImage(renderer.domElement, 0, 0)
 
