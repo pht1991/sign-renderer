@@ -190,8 +190,8 @@ body {
 }
 
 .panel-section {
-  margin-bottom: 24px;
-  padding-bottom: 20px;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
   border-bottom: 1px solid #2a2e38;
 }
 
@@ -203,7 +203,7 @@ body {
   font-size: 14px;
   font-weight: 500;
   color: #8b92a5;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -246,8 +246,8 @@ body {
 .param-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 .param-row label {
@@ -276,7 +276,7 @@ body {
 .param-value {
   font-size: 13px;
   color: #d1d5db;
-  width: 50px;
+  width: 36px;
   text-align: right;
   font-family: monospace;
 }
