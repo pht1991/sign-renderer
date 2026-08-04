@@ -153,6 +153,135 @@ function applyHomography(H: Matrix3, p: Point): Point {
 }
 
 /**
+ * 估算照片中墙面的法线方向（2D 投影）。
+ *
+ * 原理：矩形墙面的两组对边在透视下分别相交于两个灭点，灭点连线为灭线；
+ * 墙面法线在照片中的投影垂直于灭线。返回单位向量，符号指向观众（图像中心）。
+ */
+export function estimateWallNormal(
+  quad: [Point, Point, Point, Point],
+  imgW: number,
+  imgH: number,
+): { x: number; y: number } | null {
+  const [tl, tr, br, bl] = quad
+
+  // 上下边灭点（垂直方向平行线）与左右边灭点（水平方向平行线）
+  const vpY = lineIntersection(tl, tr, bl, br)
+  const vpX = lineIntersection(tl, bl, tr, br)
+
+  let dx = 0
+  let dy = 0
+  let valid = false
+
+  if (vpX && vpY) {
+    const vx = vpX.x - vpY.x
+    const vy = vpX.y - vpY.y
+    // 墙面法线垂直于灭线
+    dx = -vy
+    dy = vx
+    valid = true
+  } else if (vpX) {
+    // 左右边平行：墙面绕垂直轴不转，法线方向近似垂直于上下边中点连线
+    const mx = (tl.x + tr.x - bl.x - br.x) / 2
+    const my = (tl.y + tr.y - bl.y - br.y) / 2
+    dx = -my
+    dy = mx
+    valid = true
+  } else if (vpY) {
+    // 上下边平行：墙面绕水平轴不转，法线方向近似垂直于左右边中点连线
+    const mx = (tr.x + br.x - tl.x - bl.x) / 2
+    const my = (tr.y + br.y - tl.y - bl.y) / 2
+    dx = -my
+    dy = mx
+    valid = true
+  }
+
+  if (!valid) return null
+
+  const len = Math.hypot(dx, dy)
+  if (len < 1e-6) return null
+  dx /= len
+  dy /= len
+
+  // 选择指向观众的符号：大致指向图像中心
+  const cx = (tl.x + tr.x + br.x + bl.x) / 4
+  const cy = (tl.y + tr.y + br.y + bl.y) / 4
+  const toCenterX = imgW / 2 - cx
+  const toCenterY = imgH / 2 - cy
+  if (dx * toCenterX + dy * toCenterY < 0) {
+    dx = -dx
+    dy = -dy
+  }
+
+  return { x: dx, y: dy }
+}
+
+/**
+ * 求两条直线（分别由点 a1-a2 和 b1-b2 确定）的交点；平行时返回 null。
+ */
+function lineIntersection(a1: Point, a2: Point, b1: Point, b2: Point): Point | null {
+  const dx1 = a2.x - a1.x
+  const dy1 = a2.y - a1.y
+  const dx2 = b2.x - b1.x
+  const dy2 = b2.y - b1.y
+  const det = dx1 * dy2 - dy1 * dx2
+  if (Math.abs(det) < 1e-6) return null
+  const t = ((b1.x - a1.x) * dy2 - (b1.y - a1.y) * dx2) / det
+  return { x: a1.x + t * dx1, y: a1.y + t * dy1 }
+}
+
+/**
+ * 计算单应矩阵 H 在点 (x,y) 处的 2x2 雅可比矩阵。
+ * 返回 [dXdx, dXdy, dYdx, dYdy]，作用于齐次坐标归一化后的向量。
+ */
+function jacobianOfHomography(H: Matrix3, x: number, y: number): [number, number, number, number] | null {
+  const D = H[6] * x + H[7] * y + H[8]
+  if (Math.abs(D) < 1e-10) return null
+  const X = (H[0] * x + H[1] * y + H[2]) / D
+  const Y = (H[3] * x + H[4] * y + H[5]) / D
+  const invD = 1 / D
+  return [
+    (H[0] - X * H[6]) * invD,
+    (H[1] - X * H[7]) * invD,
+    (H[3] - Y * H[6]) * invD,
+    (H[4] - Y * H[7]) * invD,
+  ]
+}
+
+/**
+ * 根据目标四边形（照片中的标识框）计算源画布（signCanvas）空间中
+ * 厚度应预倾斜的方向。返回单位向量；若墙面近似正对相机则返回 null。
+ */
+export function computeSourceTilt(
+  quad: [Point, Point, Point, Point],
+  srcW: number,
+  srcH: number,
+): { x: number; y: number } | null {
+  const nImg = estimateWallNormal(quad, srcW, srcH)
+  if (!nImg) return null
+
+  const src: [Point, Point, Point, Point] = [
+    { x: 0, y: 0 },
+    { x: srcW, y: 0 },
+    { x: srcW, y: srcH },
+    { x: 0, y: srcH },
+  ]
+  const Hinv = solveHomography(quad, src)
+  if (!Hinv) return null
+
+  const cx = (quad[0].x + quad[2].x) / 2
+  const cy = (quad[0].y + quad[2].y) / 2
+  const Jinv = jacobianOfHomography(Hinv, cx, cy)
+  if (!Jinv) return null
+
+  const sx = Jinv[0] * nImg.x + Jinv[1] * nImg.y
+  const sy = Jinv[2] * nImg.x + Jinv[3] * nImg.y
+  const len = Math.hypot(sx, sy)
+  if (len < 1e-6) return null
+  return { x: sx / len, y: sy / len }
+}
+
+/**
  * 在任意四边形上做双线性插值。
  * 注意：这只是用来在目标四边形内部生成规则网格顶点，不是真正的透视映射；
  * 真正的源 UV 由 applyHomography(Hinv, ...) 给出。

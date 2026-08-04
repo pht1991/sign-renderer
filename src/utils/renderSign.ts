@@ -18,6 +18,11 @@ export interface RenderOptions {
   lightAzimuth?: number
   /** 主光强度系数，1 为默认，范围约 0.3~2.5 */
   lightIntensity?: number
+  /**
+   * 墙面透视倾斜：标识渲染前对厚度方向做预倾斜，使挤出方向贴合外立面法线。
+   * 单位向量（signCanvas 空间），由照片中四边形估算得到；墙面正对相机时可不传。
+   */
+  wallTilt?: { x: number; y: number }
   /** 立体分层：将 SVG 顶层 <g>/可绘制元素按图层分别拉伸并沿 Z 堆叠成浮雕 */
   layered?: boolean
   /** 层间距：相邻图层在 Z 方向的间隙（单位与 depth 一致），越大浮雕越明显 */
@@ -34,6 +39,16 @@ interface CoreRenderInput {
   lightAzimuth?: number
   /** 主光强度系数 */
   lightIntensity?: number
+  /**
+   * 墙面透视倾斜：对厚度方向做预倾斜，使挤出方向贴合外立面法线。
+   * 在 group 归一化后应用，保持正面（frontZ）不变、背面沿该方向偏移。
+   */
+  wallTilt?: { x: number; y: number }
+  /**
+   * 正面所在的局部 z 坐标（最靠近相机的 cap）。
+   * ExtrudeGeometry 正面在 z=0；BoxGeometry 正面（+z 面）在 z=depth/2。
+   */
+  frontZ?: number
   /** 由调用方根据自身的材质数组顺序，设置正面 / 侧面材质 */
   applyMaterial: (mesh: THREE.Mesh) => void
   /** 渲染完成后需要额外 dispose 的纹理（如贴图） */
@@ -47,11 +62,62 @@ interface CoreRenderInput {
 }
 
 /**
+ * 对 group 内所有 mesh 的顶点应用错切（shear），使厚度方向沿 wallTilt 倾斜。
+ *
+ * 变换保持「正面」（frontZ）的 XY 位置不变，让背面沿 -tilt 方向偏移，
+ * 从而在 signCanvas 中形成“正面相对背面朝 +tilt 倾斜”的厚度边。
+ * 经过 warp 后，该向量正好对齐墙面法线，使厚度贴合外立面。
+ */
+function applyWallTilt(group: THREE.Group, tilt: { x: number; y: number }, frontZ = 0): void {
+  // 倾斜强度：墙面倾斜越明显，厚度边越要“倒下”。
+  // 1.0 为基准：正面相对背面的最大偏移量约等于厚度本身，贴合墙面又不夸张。
+  const TILT_SCALE = 1.0
+
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh && child.geometry) {
+      const pos = child.geometry.attributes.position
+      if (!pos) return
+
+      // 找出该几何体 z 的极值，判断 frontZ 是最大 z（如 BoxGeometry +z 面）还是最小 z（如 ExtrudeGeometry cap）。
+      let zMin = Infinity
+      let zMax = -Infinity
+      for (let i = 0; i < pos.count; i++) {
+        const z = pos.getZ(i)
+        zMin = Math.min(zMin, z)
+        zMax = Math.max(zMax, z)
+      }
+      if (!Number.isFinite(zMin) || !Number.isFinite(zMax)) return
+
+      // 目标：正面（frontZ）相对背面朝 +tilt 方向偏移。
+      // 若 frontZ 是最大 z，背面 z-frontZ 为负，需用 + 号让背面朝 -tilt 走；
+      // 若 frontZ 是最小 z，背面 z-frontZ 为正，需用 - 号让背面朝 -tilt 走。
+      const sign = Math.abs(frontZ - zMax) < Math.abs(frontZ - zMin) ? 1 : -1
+
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i)
+        const y = pos.getY(i)
+        const z = pos.getZ(i) - frontZ
+        pos.setXYZ(i, x + sign * tilt.x * TILT_SCALE * z, y + sign * tilt.y * TILT_SCALE * z, z)
+      }
+      pos.needsUpdate = true
+      child.geometry.computeBoundingBox()
+      child.geometry.computeBoundingSphere()
+    }
+  })
+}
+
+/**
  * 共用渲染核心：搭建场景 / 相机 / 光照 / 环境贴图 → 应用材质 → 渲染 → 导出 canvas → 清理
  * SVG 标识与图片标识共用此函数，保证光感、材质、导出格式完全一致。
  */
 async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasElement> {
-  const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false } = input
+  const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false, wallTilt, frontZ = 0 } = input
+
+  // 若提供了墙面透视倾斜，对厚度方向做预倾斜：
+  // 保持正面（frontZ）不变，背面沿 -wallTilt 偏移，使 warp 后的厚度边贴合墙面法线。
+  if (wallTilt) {
+    applyWallTilt(group, wallTilt, frontZ)
+  }
 
   const scene = new THREE.Scene()
   scene.add(group)
@@ -184,6 +250,7 @@ export async function renderSignToCanvas(
     ambientColor,
     lightAzimuth,
     lightIntensity,
+    wallTilt,
     layered = false,
     layerGap = 10,
   } = opts
@@ -199,6 +266,7 @@ export async function renderSignToCanvas(
       ambientColor,
       lightAzimuth,
       lightIntensity,
+      wallTilt,
       layerGap,
       overrideColor,
       stretch,
@@ -238,6 +306,7 @@ export async function renderSignToCanvas(
     preset,
     lightAzimuth,
     lightIntensity,
+    wallTilt,
     extraDispose: mapTex ? [mapTex] : [],
     applyMaterial: (mesh) => {
       const mats = mesh.material as THREE.MeshStandardMaterial[]
@@ -292,12 +361,13 @@ async function renderLayeredToCanvas(
     ambientColor?: string
     lightAzimuth?: number
     lightIntensity?: number
+    wallTilt?: { x: number; y: number }
     layerGap: number
     overrideColor: THREE.Color | null
     stretch?: boolean
   },
 ): Promise<HTMLCanvasElement | null> {
-  const { preset, ambientColor, lightAzimuth, lightIntensity, layerGap, overrideColor, stretch = false } = opts
+  const { preset, ambientColor, lightAzimuth, lightIntensity, wallTilt, layerGap, overrideColor, stretch = false } = opts
 
   // 逐层解析几何，过滤掉零几何图层（如 <text>、空 <g> 等 SVGLoader 无法拉伸的内容）
   const built = layers.map((ly) => ({ sub: svgToGroup(ly.svg, depth, true), svg: ly.svg }))
@@ -364,6 +434,7 @@ async function renderLayeredToCanvas(
     preset,
     lightAzimuth,
     lightIntensity,
+    wallTilt,
     extraDispose,
     // 层间立体感靠上层在下层的投影体现：间距越大影子偏移越大
     enableShadow: true,
@@ -445,6 +516,9 @@ export async function renderImageToCanvas(
   else w = 2 * aspect
 
   const geo = new THREE.BoxGeometry(w, h, Math.max(0.1, depth))
+  // 把 BoxGeometry 沿 +Z 平移 depth/2，使正面（+z 面）位于 z=depth、背面位于 z=0，
+  // 与 SVG ExtrudeGeometry 的 z 约定一致，方便 wallTilt 统一处理。
+  geo.translate(0, 0, depth / 2)
 
   // 图片纹理：flipY 默认 true（图片的正确方向），BoxGeometry +Z 面 UV 标准，正立
   const imgTex = new THREE.Texture()
@@ -468,6 +542,8 @@ export async function renderImageToCanvas(
     preset,
     lightAzimuth,
     lightIntensity,
+    wallTilt: opts.wallTilt,
+    frontZ: depth,
     extraDispose: [imgTex],
     applyMaterial: (m) => {
       const presetDef = PRESETS[preset] ?? PRESETS.matte

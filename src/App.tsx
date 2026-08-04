@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { pdfFileToImage } from './utils/pdfToImage'
 import { PRESETS, type SignPreset, detectSvgLayers } from './utils/svgMeta'
-import { warpPerspective, type Point } from './utils/perspectiveWarp'
+import { warpPerspective, type Point, computeSourceTilt } from './utils/perspectiveWarp'
 import { compositeImage, downloadCanvas, safeExportScale, contactShadowPasses } from './utils/composite'
 
 /**
@@ -438,6 +438,13 @@ export default function App() {
     // 渲染本身是重活（SVG 解析 + ExtrudeGeometry 拉伸 / 图片贴图），
     // 拖动滑块等高频参数变化会连续触发，用 250ms 防抖合并为一次渲染，避免卡顿。
     const run = async (): Promise<HTMLCanvasElement> => {
+      // 根据照片中标识框的透视，估算 signCanvas 空间中厚度应预倾斜的方向。
+      // 这样渲染出来的厚度边经 warp 后会贴合墙面法线，而不是垂直于屏幕。
+      const wallTilt =
+        displaySize.w && displaySize.h
+          ? computeSourceTilt(points, displaySize.w, displaySize.h)
+          : null
+
       // 动态引入渲染器：把 Three.js + 渲染管线拆成独立 chunk，
       // 首屏只加载 React UI，渲染引擎在首次需要时再异步加载，首屏更快。
       const { renderSignToCanvas, renderImageToCanvas } = await import('./utils/renderSign')
@@ -449,6 +456,7 @@ export default function App() {
           ambientColor: ambientColor || undefined,
           lightAzimuth,
           lightIntensity,
+          wallTilt: wallTilt ?? undefined,
           layered: layerCount > 1 ? layered : false,
           layerGap,
         })
@@ -464,6 +472,7 @@ export default function App() {
             ambientColor: ambientColor || undefined,
             lightAzimuth,
             lightIntensity,
+            wallTilt: wallTilt ?? undefined,
           }).then(resolve)
         }
         img.onerror = () => {
@@ -498,7 +507,7 @@ export default function App() {
       window.clearTimeout(timer)
       cancelled = true
     }
-  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity, layered, layerGap, aa, layerCount])
+  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity, layered, layerGap, aa, layerCount, displaySize.w, displaySize.h, points])
 
   // === 2. 实时预览合成 ===
   const drawOverlay = useCallback(() => {
