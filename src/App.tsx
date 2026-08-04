@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { pdfFileToImage } from './utils/pdfToImage'
 import { PRESETS, type SignPreset, detectSvgLayers } from './utils/svgMeta'
 import { warpPerspective, type Point } from './utils/perspectiveWarp'
-import { compositeImage, downloadCanvas, safeExportScale } from './utils/composite'
+import { compositeImage, downloadCanvas, safeExportScale, contactShadowPasses } from './utils/composite'
 
 /**
  * 从 SVG 的 viewBox / width / height 中提取宽高比
@@ -511,8 +511,21 @@ export default function App() {
     const ctx = overlay.getContext('2d')!
     ctx.clearRect(0, 0, overlay.width, overlay.height)
 
-    // 在显示尺寸下做透视变换预览
+    // 在显示尺寸下做透视变换预览，并叠加与导出一致的柔和接触阴影
+    // （所见即所得：调光角度时预览即可看到阴影方向/软硬变化）
+    const sp = contactShadowPasses(overlay.width, depth, lightAzimuth)
+    ctx.save()
+    ctx.shadowColor = sp.outer.color
+    ctx.shadowBlur = sp.outer.blur
+    ctx.shadowOffsetX = sp.outer.offX
+    ctx.shadowOffsetY = sp.outer.offY
     warpPerspective(ctx, signCanvas, signCanvas.width, signCanvas.height, points)
+    ctx.shadowColor = sp.inner.color
+    ctx.shadowBlur = sp.inner.blur
+    ctx.shadowOffsetX = sp.inner.offX
+    ctx.shadowOffsetY = sp.inner.offY
+    warpPerspective(ctx, signCanvas, signCanvas.width, signCanvas.height, points)
+    ctx.restore()
 
     // 辅助网格：在标识自身坐标系内生成，并随标识一起透视 warp，
     // 使网格与标识内容完全对齐，用于判断标识在四点框内是否端正、居中。
@@ -533,7 +546,7 @@ export default function App() {
         points,
       )
     }
-  }, [signCanvas, displaySize, points, showGrid])
+  }, [signCanvas, displaySize, points, showGrid, depth, lightAzimuth])
 
   // 用 RAF 合并高频重绘：拖拽四点 / 缩放时每帧只重绘一次，避免重复 warp 卡顿
   const updatePreview = useCallback(() => {

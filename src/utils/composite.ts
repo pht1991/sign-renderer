@@ -5,6 +5,44 @@ export const MAX_EXPORT_DIM = 8000
 export const MAX_EXPORT_PIXELS = 64_000_000
 
 /**
+ * 接触阴影双层参数：外层柔晕（宽模糊、低透明度）+ 内层贴边影（窄模糊、稍高透明度）。
+ * 偏移量克制在标识边缘内，避免「悬浮」的硬投影；方向跟随光照方位角。
+ * 导出（compositeImage）与实时预览（drawOverlay）共用，保证所见即所得。
+ */
+export interface ContactShadowPass {
+  color: string
+  blur: number
+  offX: number
+  offY: number
+}
+export function contactShadowPasses(
+  canvasW: number,
+  shadowDepth: number,
+  shadowAzimuth: number,
+): { outer: ContactShadowPass; inner: ContactShadowPass } {
+  const depthNorm = Math.min(1, shadowDepth / 80)
+  const az = (shadowAzimuth * Math.PI) / 180
+  const unit = canvasW * 0.0016
+  const offX = -Math.sin(az) * unit * (0.8 + depthNorm * 0.6) // 光从左侧(az<0)来 → 影向右，幅度克制
+  const offY = unit * (0.6 + depthNorm * 0.7) // 重力向下，厚度加成但始终贴边
+  return {
+    outer: {
+      color: 'rgba(0,0,0,0.25)',
+      blur: Math.max(4, canvasW * 0.012 * (0.7 + depthNorm)),
+      offX: offX * 1.5,
+      offY: offY * 1.5,
+    },
+    inner: {
+      color: 'rgba(0,0,0,0.35)',
+      blur: Math.max(2, canvasW * 0.005 * (0.5 + depthNorm)),
+      offX,
+      offY,
+    },
+  }
+}
+
+
+/**
  * 计算安全的导出倍率：在不超出最大边长与最大像素总量的前提下尽量接近 requested。
  * 返回 [0, requested] 之间的有效倍率。
  */
@@ -76,21 +114,19 @@ export function compositeImage(
   const tctx = tmp.getContext('2d')!
   warpPerspective(tctx, signCanvas, signCanvas.width, signCanvas.height, dstPoints)
 
-  // 柔和接触阴影：让标识"贴"在墙上有立体感。
-  // 阴影方向跟随光照方位角（背光方向偏移），偏移/模糊随标识厚度增大——
-  // 越厚的立体标识，在墙上的投影越大越虚，与 3D 厚度、光照方向物理一致。
-  const depthNorm = Math.min(1, shadowDepth / 80)
-  const baseOff = Math.max(1, canvas.width * 0.002)
-  const off = baseOff * (0.6 + depthNorm)
-  const az = (shadowAzimuth * Math.PI) / 180
-  const shadowOffX = -Math.sin(az) * off * 1.3 // 光从左侧(az<0)来 → 影向右
-  const shadowOffY = off * (1 + depthNorm * 0.8) // 重力向下，厚度加成
-  const shadowBlur = Math.max(2, canvas.width * 0.006 * (0.6 + depthNorm))
+  // 柔和接触阴影：让标识"贴"在墙上有立体感，避免生硬/悬浮。
+  // 用公共 contactShadowPasses（与实时预览共用），偏移克制、双层柔化。
+  const sp = contactShadowPasses(canvas.width, shadowDepth, shadowAzimuth)
   ctx.save()
-  ctx.shadowColor = 'rgba(0,0,0,0.45)'
-  ctx.shadowBlur = shadowBlur
-  ctx.shadowOffsetX = shadowOffX
-  ctx.shadowOffsetY = shadowOffY
+  ctx.shadowColor = sp.outer.color
+  ctx.shadowBlur = sp.outer.blur
+  ctx.shadowOffsetX = sp.outer.offX
+  ctx.shadowOffsetY = sp.outer.offY
+  ctx.drawImage(tmp, 0, 0)
+  ctx.shadowColor = sp.inner.color
+  ctx.shadowBlur = sp.inner.blur
+  ctx.shadowOffsetX = sp.inner.offX
+  ctx.shadowOffsetY = sp.inner.offY
   ctx.drawImage(tmp, 0, 0)
   ctx.restore()
 

@@ -119,7 +119,7 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
     sc.far = 50
     keyLight.shadow.bias = -0.0008
     keyLight.shadow.normalBias = 0.02
-    keyLight.shadow.radius = 6
+    keyLight.shadow.radius = 10
     keyLight.target.position.set(0, 0, 0)
     scene.add(keyLight.target)
   }
