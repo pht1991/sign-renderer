@@ -1,5 +1,6 @@
 import * as THREE from 'three'
-import { svgToGroup, normalizeGroup, PRESETS, type SignPreset, detectSvgLayers, type SvgBBox } from './svgToMesh'
+import { svgToGroup, normalizeGroup } from './svgToMesh'
+import { PRESETS, type SignPreset, type SvgBBox, detectSvgLayers } from './svgMeta'
 
 /**
  * Three.js 离屏渲染：将标识渲染为带 3D 厚度 + 光照 + 材质质感的透明背景 Canvas

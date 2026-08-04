@@ -134,16 +134,28 @@ function drawGuideLines(
 }
 
 /**
- * 将 Canvas 导出为 PNG 并下载
+ * 将 Canvas 导出并下载，支持 PNG / JPG / WebP 三种格式。
+ * 合成图以照片为底（不透明），故 JPG/WebP 导出无透明黑边问题。
+ * @param mime   目标格式，默认 image/png（PNG 无损，忽略 quality）
+ * @param quality JPG/WebP 有损质量 0~1，默认 0.92
  */
-export function downloadCanvas(canvas: HTMLCanvasElement, filename: string = '效果图.png'): void {
-  canvas.toBlob((blob) => {
-    if (!blob) return
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    a.click()
-    URL.revokeObjectURL(url)
-  }, 'image/png')
+export function downloadCanvas(
+  canvas: HTMLCanvasElement,
+  filename: string = '效果图.png',
+  mime: string = 'image/png',
+  quality = 0.92,
+): void {
+  canvas.toBlob(
+    (blob) => {
+      if (!blob) return
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.click()
+      URL.revokeObjectURL(url)
+    },
+    mime,
+    mime === 'image/png' ? undefined : quality,
+  )
 }

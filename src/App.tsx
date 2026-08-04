@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { renderSignToCanvas, renderImageToCanvas } from './utils/renderSign'
 import { pdfFileToImage } from './utils/pdfToImage'
-import { PRESETS, type SignPreset, detectSvgLayers } from './utils/svgToMesh'
+import { PRESETS, type SignPreset, detectSvgLayers } from './utils/svgMeta'
 import { warpPerspective, type Point } from './utils/perspectiveWarp'
 import { compositeImage, downloadCanvas, safeExportScale } from './utils/composite'
 
@@ -196,8 +195,9 @@ function isQuadValid(pts: [Point, Point, Point, Point]): string | null {
 }
 
 /**
- * 根据照片亮度与左右亮暗分布，自动建议光照方向与强度（P2 光照匹配收尾）。
- * 暗照片需要更强主光；亮侧即光源侧，方位角朝该侧。
+ * 根据照片亮度分布自动建议光照方向与强度（P2 光照匹配收尾，P3 增强）。
+ * 把照片缩略图分成四象限，光源来自更亮的一侧 → 方位角朝该侧；
+ * 整体越暗，主光越强，避免暗照片里的标识发灰。
  */
 function analyzeLighting(img: HTMLImageElement): { azimuth: number; intensity: number } | null {
   try {
@@ -209,31 +209,29 @@ function analyzeLighting(img: HTMLImageElement): { azimuth: number; intensity: n
     if (!ctx) return null
     ctx.drawImage(img, 0, 0, n, n)
     const data = ctx.getImageData(0, 0, n, n).data
-    let total = 0
-    let left = 0
-    let right = 0
-    let leftN = 0
-    let rightN = 0
     const half = Math.floor(n / 2)
+    let tl = 0, tr = 0, bl = 0, br = 0, tlN = 0, trN = 0, blN = 0, brN = 0
     for (let y = 0; y < n; y++) {
       for (let x = 0; x < n; x++) {
         const i = (y * n + x) * 4
         const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]
-        total += lum
-        if (x < half) {
-          left += lum
-          leftN++
-        } else {
-          right += lum
-          rightN++
-        }
+        if (y < half && x < half) { tl += lum; tlN++ }
+        else if (y < half) { tr += lum; trN++ }
+        else if (x < half) { bl += lum; blN++ }
+        else { br += lum; brN++ }
       }
     }
-    const avg = total / (n * n)
-    const leftAvg = left / leftN
-    const rightAvg = right / rightN
-    const azimuth = rightAvg >= leftAvg ? 30 : -30
-    const intensity = avg < 70 ? 1.9 : avg < 130 ? 1.4 : 1.0
+    const TL = tl / tlN, TR = tr / trN, BL = bl / blN, BR = br / brN
+    const top = (TL + TR) / 2
+    const bottom = (BL + BR) / 2
+    const left = (TL + BL) / 2
+    const right = (TR + BR) / 2
+    const avg = (TL + TR + BL + BR) / 4
+    // 光源来自更亮的一侧：右侧更亮 → azimuth 正（主光从右来），左侧更亮 → 负
+    const horizDiff = right - left
+    const azimuth = Math.max(-85, Math.min(85, Math.round((horizDiff / (avg + 1)) * 70)))
+    // 整体偏暗则增强主光（暗照片里标识易发灰），偏亮则收敛
+    const intensity = avg < 60 ? 1.9 : avg < 110 ? 1.5 : avg < 160 ? 1.2 : 1.0
     return { azimuth, intensity }
   } catch {
     return null
@@ -353,6 +351,8 @@ export default function App() {
   const [lightAzimuth, setLightAzimuth] = useState<number>(0)
   const [lightIntensity, setLightIntensity] = useState<number>(1)
   const [exportScale, setExportScale] = useState<number>(1)
+  // 导出格式：PNG 无损 / JPG 体积小 / WebP 兼顾（纯静态场景按需选择）
+  const [exportFormat, setExportFormat] = useState<'png' | 'jpg' | 'webp'>('png')
 
   // === 撤销 / 重做历史系统 ===
   type EditState = {
@@ -437,38 +437,43 @@ export default function App() {
     setIsRendering(true)
     // 渲染本身是重活（SVG 解析 + ExtrudeGeometry 拉伸 / 图片贴图），
     // 拖动滑块等高频参数变化会连续触发，用 250ms 防抖合并为一次渲染，避免卡顿。
-    const run = (): Promise<HTMLCanvasElement> =>
-      svgString
-        ? renderSignToCanvas(svgString, depth, aa ? 1024 : 512, {
+    const run = async (): Promise<HTMLCanvasElement> => {
+      // 动态引入渲染器：把 Three.js + 渲染管线拆成独立 chunk，
+      // 首屏只加载 React UI，渲染引擎在首次需要时再异步加载，首屏更快。
+      const { renderSignToCanvas, renderImageToCanvas } = await import('./utils/renderSign')
+      if (svgString) {
+        return renderSignToCanvas(svgString, depth, aa ? 1024 : 512, {
+          stretch,
+          color,
+          preset,
+          ambientColor: ambientColor || undefined,
+          lightAzimuth,
+          lightIntensity,
+          layered: layerCount > 1 ? layered : false,
+          layerGap,
+        })
+      }
+      return new Promise<HTMLCanvasElement>((resolve) => {
+        const img = new Image()
+        img.onload = () => {
+          setImageAspect(img.width / img.height)
+          renderImageToCanvas(img, depth, aa ? 1024 : 512, {
             stretch,
             color,
             preset,
             ambientColor: ambientColor || undefined,
             lightAzimuth,
             lightIntensity,
-            layered: layerCount > 1 ? layered : false,
-            layerGap,
-          })
-        : new Promise<HTMLCanvasElement>((resolve) => {
-            const img = new Image()
-            img.onload = () => {
-              setImageAspect(img.width / img.height)
-              renderImageToCanvas(img, depth, aa ? 1024 : 512, {
-                stretch,
-                color,
-                preset,
-                ambientColor: ambientColor || undefined,
-                lightAzimuth,
-                lightIntensity,
-              }).then(resolve)
-            }
-            img.onerror = () => {
-              setSignWarn('图片加载失败，请换一张试试')
-              setSignCanvas(null)
-              setIsRendering(false)
-            }
-            img.src = signImageSrc
-          })
+          }).then(resolve)
+        }
+        img.onerror = () => {
+          setSignWarn('图片加载失败，请换一张试试')
+          setSignCanvas(null)
+          setIsRendering(false)
+        }
+        img.src = signImageSrc
+      })
+    }
     const timer = window.setTimeout(() => {
       run()
         .then((canvas) => {
@@ -1001,7 +1006,13 @@ export default function App() {
           depth,
           lightAzimuth,
         )
-        downloadCanvas(canvas, `广告标识安装效果图_${usedScale.toFixed(1)}x.png`)
+        const fmtMap = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' } as const
+        const extMap = { png: 'png', jpg: 'jpg', webp: 'webp' } as const
+        downloadCanvas(
+          canvas,
+          `广告标识安装效果图_${usedScale.toFixed(1)}x.${extMap[exportFormat]}`,
+          fmtMap[exportFormat],
+        )
       } catch {
         setSignWarn('导出失败，请降低导出分辨率或重新上传照片后重试')
       } finally {
@@ -1170,6 +1181,9 @@ export default function App() {
             </button>
             {svgString && <p className="status-ok">SVG 标识已加载</p>}
             {signImageSrc && !svgString && <p className="status-ok">图片标识已加载</p>}
+            {!svgString && !signImageSrc && (
+              <p className="hint">尚未上传标识：可上传 SVG / 图片 / AI / EPS，或点「使用示例 LOGO」快速体验</p>
+            )}
             {signWarn && <p className="status-warn">{signWarn}</p>}
             {(isRendering || exporting) && (
               <div className="loading-row">
@@ -1382,6 +1396,18 @@ export default function App() {
                 <option value={1}>1x（原图）</option>
                 <option value={2}>2x（高清）</option>
                 <option value={4}>4x（超清）</option>
+              </select>
+            </div>
+            <div className="param-row">
+              <label>导出格式</label>
+              <select
+                value={exportFormat}
+                onChange={(e) => setExportFormat(e.target.value as 'png' | 'jpg' | 'webp')}
+                className="preset-select"
+              >
+                <option value="png">PNG（无损）</option>
+                <option value="jpg">JPG（体积小）</option>
+                <option value="webp">WebP（兼顾）</option>
               </select>
             </div>
             <button
