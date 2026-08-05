@@ -80,6 +80,7 @@ function applyWallTilt(
   tilt: { x: number; y: number },
   shearAmount = 0,
 ): void {
+  if (shearAmount === 0) return
   // 全局 z 范围：相机在 +Z 侧，z 最大者为可见正面、必须保持不动。
   let zMinG = Infinity
   let zMaxG = -Infinity
@@ -98,6 +99,13 @@ function applyWallTilt(
   const frontZ = zMaxG
   const span = (zMaxG - zMinG) || 1
 
+  // shearAmount 是按「世界（归一化）单位」算的（clampedShear 来自 frontSize），
+  // 但 geometry 顶点仍是原始单位（normalizeGroup 是通过 group.scale 缩放的，不改 geometry）。
+  // 必须把 shear 换算回 geometry 局部单位，否则被 group 缩放系数（~0.01）一起缩小，
+  // 导致错切幅度被压成 ~0.2px、厚度倾斜完全看不出来（之前 SVG/图片厚度“还原”的根因）。
+  const localScale = group.scale.x || 1
+  const localShear = shearAmount / localScale
+
   group.traverse((child) => {
     if (child instanceof THREE.Mesh && child.geometry) {
       const pos = child.geometry.attributes.position
@@ -108,7 +116,7 @@ function applyWallTilt(
         const y = pos.getY(i)
         const z = pos.getZ(i)
         const zr = (frontZ - z) / span // 正面=0（不动），背面=+1（偏移）
-        pos.setXYZ(i, x + tilt.x * shearAmount * zr, y + tilt.y * shearAmount * zr, z)
+        pos.setXYZ(i, x + tilt.x * localShear * zr, y + tilt.y * localShear * zr, z)
       }
       pos.needsUpdate = true
       child.geometry.computeBoundingBox()
@@ -134,11 +142,12 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   const natH = Math.max(preSize.y, 0.001)
   const naturalAspect = natW / natH
 
-  // 2) 厚度侧边错切幅度：用「标识较小边 × 比例」表示，随厚度滑块放缩并设上限。
-  //    不能用较大边（之前写法会让超宽/超高标识的侧面被甩出画面、画布被撑爆、logo 被挤小）。
-  const minDim = Math.min(natW, natH)
+  // 2) 厚度侧边错切幅度：用「标识较大边（frontSize）× 比例」表示，随厚度滑块放缩并设上限。
+  //    这样错切幅度始终与正面平面尺寸同量级，经 warp 后厚度边沿墙面法线倾斜清晰可见；
+  //    用较大边而非较小边，避免超宽/超高标识的厚度倾斜被压得看不出来（之前用较小边导致“厚度还原”观感）。
+  const frontSize = Math.max(natW, natH)
   const depthFrac = Math.min(2, Math.max(0.15, (depth ?? 30) / 30))
-  const clampedShear = Math.min(minDim * 0.18 * depthFrac, minDim * 0.45)
+  const clampedShear = Math.min(frontSize * 0.12 * depthFrac, frontSize * 0.5)
 
   // 3) 厚度方向透视预倾斜：保持正面不变，背面沿 +wallTilt 偏移 clampedShear，
   //    使 warp 后的厚度边贴合墙面法线。仅影响背面投影，正面 logo 不受此变形。
@@ -176,11 +185,10 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   const halfW = Math.max(contentHalfW, contentHalfH * naturalAspect) * margin
   const halfH = halfW / naturalAspect
 
-  // 相机 z 位置必须位于标识「正面」之前：
-  // 图片标识的贴图面在 +z（z = +depth/2），SVG 标识的图案 cap 在 z=0；
-  // 若相机固定 z=10 而厚度较大（如默认 30），+z 面会落到相机背后被裁掉 → 图片看不见。
-  // 因此相机按厚度方向后移，保证正面恒在相机前方，且远小于视锥尺寸不影响平面缩放。
-  const cameraZ = preSize.z / 2 + 5
+  // 相机 z 位置必须位于标识「正面」（z 最大面）之前：
+  // 图片/分层标识的正面在 +z（z = 厚度归一化后的值），SVG 标识的图案 cap 也在 +z；
+  // 用包围盒最大 z + 余量，保证正面恒在相机前方，不会被裁掉（否则图片看不见）。
+  const cameraZ = preBox.max.z + 5
   const camera = new THREE.OrthographicCamera(
     -halfW, halfW, halfH, -halfH,
     0.1, cameraZ + halfW + 10,
@@ -556,17 +564,20 @@ export async function renderImageToCanvas(
 ): Promise<HTMLCanvasElement> {
   const { color = '#dddddd', preset = 'matte', ambientColor, lightAzimuth, lightIntensity } = opts
 
-  // 归一化：最大边 = 2 居中，厚度沿 Z 轴
+  // 归一化：与 SVG 同一单位体系。
+  // 之前直接把平面设为 ~2、厚度用原始 depth(默认30) 且不归一化 —— 导致平面(2)与厚度(30)
+  // 量级悬殊：相机落在正面之后（图片被裁掉不显示），且错切幅度相对厚度过小、厚度倾斜看不出（“还原”观感）。
+  // 现改为：先用名义 200 单位构建平面（保持原图比例），厚度用滑块值，再整体归一化到最大边=2，
+  // 使厚度进入 0.3 量级，与 SVG 完全一致 —— 相机/错切/厚度倾斜都恢复正常。
   const aspect = img.width && img.height ? img.width / img.height : 1
-  let w = 2
-  let h = 2
-  if (aspect >= 1) h = 2 / aspect
-  else w = 2 * aspect
+  const base = 200
+  let w0 = base
+  let h0 = base
+  if (aspect >= 1) h0 = base / aspect
+  else w0 = base * aspect
 
-  const geo = new THREE.BoxGeometry(w, h, Math.max(0.1, depth))
-  // 把 BoxGeometry 沿 +Z 平移 depth/2，使正面（+z 面）位于 z=depth、背面位于 z=0，
-  // 与 SVG ExtrudeGeometry 的 z 约定一致，方便 wallTilt 统一处理。
-  geo.translate(0, 0, depth / 2)
+  const geo = new THREE.BoxGeometry(w0, h0, Math.max(0.1, depth))
+  // 不平移：BoxGeometry 中心已在原点，+z 面位于 z=+depth/2；归一化后再整体居中。
 
   // 图片纹理：flipY 默认 true（图片的正确方向），BoxGeometry +Z 面 UV 标准，正立
   const imgTex = new THREE.Texture()
@@ -582,6 +593,9 @@ export async function renderImageToCanvas(
   // 仅 +z 面（index 4）使用贴图，其余面为边框色
   const mesh = new THREE.Mesh(geo, [side, side, side, side, face, side])
   group.add(mesh)
+
+  // 与 SVG 同一归一化：最大边（平面）= 2，厚度同步缩放到 0.3 量级
+  normalizeGroup(group, 2)
 
   return renderGroupToCanvas({
     group,
