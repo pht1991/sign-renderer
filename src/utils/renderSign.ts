@@ -132,8 +132,8 @@ function applyWallTilt(
 async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasElement> {
   const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false, wallTilt, depth } = input
 
-  // 1) 自然包围盒（仅 xy，忽略厚度 z），用于决定画布比例 + 统一取景。
-  //    拉伸模式（stretch）下 group 已被拉成 2×2，naturalAspect≈1，标识按比例铺满画布；
+  // 1) 错切前包围盒：取正面平面尺寸与自然比例，用于决定画布比例。
+  //    拉伸模式（stretch）下 group 已被拉成 2×2，naturalAspect≈1；
   //    非拉伸模式天然保留标识真实比例（如 2.5:1 横向 LOGO）。
   const preBox = new THREE.Box3().setFromObject(group)
   const preSize = new THREE.Vector3()
@@ -142,46 +142,44 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   const natH = Math.max(preSize.y, 0.001)
   const naturalAspect = natW / natH
 
-  // 2) 厚度侧边错切幅度：用「标识较大边（frontSize）× 比例」表示，随厚度滑块放缩并设上限。
-  //    这样错切幅度始终与正面平面尺寸同量级，经 warp 后厚度边沿墙面法线倾斜清晰可见；
-  //    用较大边而非较小边，避免超宽/超高标识的厚度倾斜被压得看不出来（之前用较小边导致“厚度还原”观感）。
-  const frontSize = Math.max(natW, natH)
-  const depthFrac = Math.min(2, Math.max(0.15, (depth ?? 30) / 30))
-  const clampedShear = Math.min(frontSize * 0.12 * depthFrac, frontSize * 0.5)
-
-  // 3) 厚度方向透视预倾斜：保持正面不变，背面沿 +wallTilt 偏移 clampedShear，
-  //    使 warp 后的厚度边贴合墙面法线。仅影响背面投影，正面 logo 不受此变形。
+  // 2) 厚度方向透视预倾斜：背面沿 wallTilt 偏移「实际世界厚度」preSize.z，
+  //    使挤出方向严格贴合墙面法线，角度不受 depth 滑块额外缩放。
+  //    正面由 applyWallTilt 自动判定（z 最大处）并保持不动。
   if (wallTilt) {
-    applyWallTilt(group, wallTilt, clampedShear)
+    applyWallTilt(group, wallTilt, preSize.z)
   }
 
   const scene = new THREE.Scene()
   scene.add(group)
 
-  // 4) 错切后重新取景：内容包围盒（xy），中心用于居中相机
+  // 3) 错切后包围盒：决定相机取景范围。
   const postBox = new THREE.Box3().setFromObject(group)
   const postSize = new THREE.Vector3()
   postBox.getSize(postSize)
-  const contentHalfW = Math.max(postSize.x, 0.001) / 2
-  const contentHalfH = Math.max(postSize.y, 0.001) / 2
   const contentCenter = postBox.getCenter(new THREE.Vector3())
 
-  // 5) 画布尺寸：较长边 = renderSize，比例 = 标识自然比例。
-  //    标识在画布内占满、无 letterbox，warp 到四边形时才不会被非等比拉伸。
+  // 4) 画布尺寸：跟随标识自然宽高比；当厚度倾斜使背面超出正面范围时，
+  //    提高渲染分辨率（而非缩小正面），保证正面像素密度不变、厚度边可见。
+  const scaleUpX = Math.max(1, postSize.x / natW)
+  const scaleUpY = Math.max(1, postSize.y / natH)
+  const scaleUp = Math.min(2.0, Math.max(scaleUpX, scaleUpY))
+  const renderSizeEff = Math.round(renderSize * scaleUp)
+
   let canvasW: number
   let canvasH: number
   if (naturalAspect >= 1) {
-    canvasW = renderSize
-    canvasH = Math.max(1, Math.round(renderSize / naturalAspect))
+    canvasW = renderSizeEff
+    canvasH = Math.max(1, Math.round(renderSizeEff / naturalAspect))
   } else {
-    canvasW = Math.max(1, Math.round(renderSize * naturalAspect))
-    canvasH = renderSize
+    canvasW = Math.max(1, Math.round(renderSizeEff * naturalAspect))
+    canvasH = renderSizeEff
   }
 
-  // 6) 正交相机：保持「世界单位 → 像素」在 x/y 方向一致（uniform），
-  //    即相机视锥比例 == 画布比例 == naturalAspect，确保正面 logo 在画布上比例正确。
-  //    取能装下错切后内容、且比例 = naturalAspect 的最小半视锥（克制余量）。
-  const margin = 1.06
+  // 5) 正交相机：视锥按错切后内容取景，但比例保持自然比例，
+  //    使正面 logo 在画布上保持原比例、不被厚度边撑小。
+  const margin = 1.03
+  const contentHalfW = Math.max(postSize.x, 0.001) / 2
+  const contentHalfH = Math.max(postSize.y, 0.001) / 2
   const halfW = Math.max(contentHalfW, contentHalfH * naturalAspect) * margin
   const halfH = halfW / naturalAspect
 
