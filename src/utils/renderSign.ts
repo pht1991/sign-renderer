@@ -546,13 +546,58 @@ async function renderLayeredToCanvas(
 }
 
 /**
+ * 采样图片外边框的平均颜色，用于图片标识的侧面材质。
+ * 图片标识的“厚度边”本质上是印刷材料的切面，使用图片边缘颜色能让 wallTilt 暴露的
+ * 侧面自然融入正面画面，避免纯色边框在边角形成突兀的深色块。
+ */
+function sampleBorderColor(img: HTMLImageElement, borderPx = 4): THREE.Color {
+  const c = document.createElement('canvas')
+  const maxSample = 256
+  const sw = Math.min(img.width, maxSample)
+  const sh = Math.round(sw / (img.width / img.height || 1))
+  c.width = sw
+  c.height = sh
+  const ctx = c.getContext('2d')
+  if (!ctx) return new THREE.Color(0xdddddd)
+  ctx.drawImage(img, 0, 0, sw, sh)
+  let data
+  try {
+    data = ctx.getImageData(0, 0, sw, sh).data
+  } catch {
+    return new THREE.Color(0xdddddd)
+  }
+  let r = 0
+  let g = 0
+  let bSum = 0
+  let count = 0
+  const b = borderPx
+  for (let y = 0; y < sh; y++) {
+    for (let x = 0; x < sw; x++) {
+      if (x < b || x >= sw - b || y < b || y >= sh - b) {
+        const i = (y * sw + x) * 4
+        r += data[i]
+        g += data[i + 1]
+        bSum += data[i + 2]
+        count++
+      }
+    }
+  }
+  if (count === 0) return new THREE.Color(0xdddddd)
+  return new THREE.Color(r / count / 255, g / count / 255, bSum / count / 255)
+}
+
+/**
  * 图片标识渲染入口（PNG/JPG/WebP 等位图）
  *
- * 将图片作为正面贴图映射到带厚度的薄盒（BoxGeometry），复用全部材质预设 / 环境光 /
- * 三光源 / 环境贴图，因此图片标识同样具备厚度与材质质感，且下游 warp / 阴影 / 导出
- * 与 SVG 标识完全一致（都收敛为同一张 signCanvas）。
+ * 将图片作为正面贴图映射到带厚度的拉伸体（ExtrudeGeometry + 矩形 Shape），复用全部
+ * 材质预设 / 环境光 / 三光源 / 环境贴图，因此图片标识同样具备厚度与材质质感，且下游
+ * warp / 阴影 / 导出与 SVG 标识完全一致（都收敛为同一张 signCanvas）。
  *
- * 材质数组顺序（BoxGeometry）：[+x, -x, +y, -y, +z, -z]，+z 为朝相机的正面。
+ * 为什么不用 BoxGeometry：BoxGeometry 的 -z 背面是独立大平面，wallTilt 错切后背面
+ * 下角容易从正面轮廓下方露出，形成左下/右下两块深色角块；ExtrudeGeometry 的侧面
+ * 连续、背 cap 与正 cap 使用同一材质索引，露出的背面也会显示贴图，不会出现孤立黑块。
+ *
+ * 材质数组顺序（ExtrudeGeometry）：[0=侧面, 1=顶/底 cap]，cap 为朝相机的正面。
  */
 export async function renderImageToCanvas(
   img: HTMLImageElement,
@@ -562,11 +607,8 @@ export async function renderImageToCanvas(
 ): Promise<HTMLCanvasElement> {
   const { color = '#dddddd', preset = 'matte', ambientColor, lightAzimuth, lightIntensity } = opts
 
-  // 归一化：与 SVG 同一单位体系。
-  // 之前直接把平面设为 ~2、厚度用原始 depth(默认30) 且不归一化 —— 导致平面(2)与厚度(30)
-  // 量级悬殊：相机落在正面之后（图片被裁掉不显示），且错切幅度相对厚度过小、厚度倾斜看不出（“还原”观感）。
-  // 现改为：先用名义 200 单位构建平面（保持原图比例），厚度用滑块值，再整体归一化到最大边=2，
-  // 使厚度进入 0.3 量级，与 SVG 完全一致 —— 相机/错切/厚度倾斜都恢复正常。
+  // 与 SVG 同一单位体系：先用名义 200 单位构建平面（保持原图比例），厚度用滑块值，
+  // 再整体归一化到最大边=2，使厚度进入 0.3 量级，相机/错切/厚度倾斜与 SVG 一致。
   const aspect = img.width && img.height ? img.width / img.height : 1
   const base = 200
   let w0 = base
@@ -574,10 +616,65 @@ export async function renderImageToCanvas(
   if (aspect >= 1) h0 = base / aspect
   else w0 = base * aspect
 
-  const geo = new THREE.BoxGeometry(w0, h0, Math.max(0.1, depth))
-  // 不平移：BoxGeometry 中心已在原点，+z 面位于 z=+depth/2；归一化后再整体居中。
+  // 矩形 Shape，CCW 顶点顺序使 extrude 后的正面 cap（z=depth）法线朝 +z
+  const shape = new THREE.Shape()
+  shape.moveTo(-w0 / 2, -h0 / 2)
+  shape.lineTo(w0 / 2, -h0 / 2)
+  shape.lineTo(w0 / 2, h0 / 2)
+  shape.lineTo(-w0 / 2, h0 / 2)
+  shape.lineTo(-w0 / 2, -h0 / 2)
 
-  // 图片纹理：flipY 默认 true（图片的正确方向），BoxGeometry +Z 面 UV 标准，正立
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: Math.max(0.1, depth),
+    bevelEnabled: false,
+  })
+
+  // ExtrudeGeometry 默认 UV 不按 [0,1] 矩形映射，需手动设置：
+  // - 正面 cap：完整图片 planar 映射；
+  // - 侧面：按所处边（左/右/上/下）映射到图片对应边缘像素，
+  //   这样 wallTilt 暴露的侧面会显示图片边缘内容，而非纯色块，自然融入画面。
+  const pos = geo.attributes.position as THREE.BufferAttribute
+  const uv = geo.attributes.uv as THREE.BufferAttribute
+  const box = new THREE.Box3().setFromBufferAttribute(pos)
+  const bx = box.min.x
+  const by = box.min.y
+  const bw = Math.max(box.max.x - box.min.x, 0.001)
+  const bh = Math.max(box.max.y - box.min.y, 0.001)
+  const zMin = box.min.z
+  const zMax = box.max.z
+  const capEps = 0.001
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i)
+    const y = pos.getY(i)
+    const z = pos.getZ(i)
+    const nx = (x - bx) / bw // 0..1 across width
+    const ny = (y - by) / bh // 0..1 across height
+
+    if (Math.abs(z - zMax) < capEps) {
+      // 正面 cap：完整图片，v=0 在底部、v=1 在顶部，配合 flipY=true 图片正立
+      uv.setXY(i, nx, ny)
+    } else if (Math.abs(z - zMin) >= capEps) {
+      // 侧面：找最近边，映射到图片边缘
+      const dBottom = ny
+      const dTop = 1 - ny
+      const dLeft = nx
+      const dRight = 1 - nx
+      const minD = Math.min(dBottom, dTop, dLeft, dRight)
+      if (minD === dBottom) {
+        uv.setXY(i, nx, 0)
+      } else if (minD === dTop) {
+        uv.setXY(i, nx, 1)
+      } else if (minD === dLeft) {
+        uv.setXY(i, 0, ny)
+      } else {
+        uv.setXY(i, 1, ny)
+      }
+    }
+    // 背面 cap 沿用默认 UV（正常情况下不可见）
+  }
+  uv.needsUpdate = true
+
+  // 图片纹理：flipY=true，配合上述 UV（v=0 在底部）使图片正立
   const imgTex = new THREE.Texture()
   imgTex.image = img
   imgTex.flipY = true
@@ -585,15 +682,29 @@ export async function renderImageToCanvas(
   imgTex.anisotropy = 4
   imgTex.needsUpdate = true
 
+  // 侧面颜色：以图片边框平均色为主（让 wallTilt 暴露的厚度边自然融入正面画面），
+  // 再混入少量用户边框色作为风格调节。
+  const borderColor = sampleBorderColor(img)
+  const userColor = new THREE.Color(color)
+  const sideColor = borderColor.clone().lerp(userColor, 0.2)
+
   const group = new THREE.Group()
   const face = new THREE.MeshStandardMaterial()
-  const side = new THREE.MeshStandardMaterial()
-  // 仅 +z 面（index 4）使用贴图，其余面为边框色
-  const mesh = new THREE.Mesh(geo, [side, side, side, side, face, side])
+  // 侧面使用 BasicMaterial：不受光照角度压暗，避免正面边缘出现突兀深色阴影块。
+  const side = new THREE.MeshBasicMaterial({ color: sideColor })
+  // ExtrudeGeometry 材质索引：0=cap，1=侧面（与 svgToMesh.ts 一致）
+  const mesh = new THREE.Mesh(geo, [face, side])
   group.add(mesh)
 
   // 与 SVG 同一归一化：最大边（平面）= 2，厚度同步缩放到 0.3 量级
   normalizeGroup(group, 2)
+
+  // 图片标识对 wallTilt 的垂直分量做抑制：
+  // 建筑外立面 mostly 垂直，竖直方向透视导致的厚度边暴露容易在左下/右下形成深色角块；
+  // 保留水平分量让厚度贴合墙面的左右倾斜，并用 30% 的垂直分量保留一点上下透视。
+  const dampedWallTilt = opts.wallTilt
+    ? { x: opts.wallTilt.x, y: opts.wallTilt.y * 0.3 }
+    : undefined
 
   return renderGroupToCanvas({
     group,
@@ -602,23 +713,22 @@ export async function renderImageToCanvas(
     preset,
     lightAzimuth,
     lightIntensity,
-    wallTilt: opts.wallTilt,
+    wallTilt: dampedWallTilt,
     depth,
     extraDispose: [imgTex],
     applyMaterial: (m) => {
       const presetDef = PRESETS[preset] ?? PRESETS.matte
-      const mats = m.material as THREE.MeshStandardMaterial[]
-      const f = mats[4] // +z 正面
-      const s = mats[0] // 侧面 / 边框（数组首元素，与 SVG 一致）
+      const mats = m.material as THREE.Material[]
+      const f = mats[0] as THREE.MeshStandardMaterial // cap 正面
+      const s = mats[1] as THREE.MeshBasicMaterial // 侧面
 
       f.map = imgTex
       f.color = new THREE.Color(0xffffff)
       f.metalness = presetDef.metalness
       f.roughness = presetDef.roughness
-
-      s.color = new THREE.Color(color)
-      s.metalness = presetDef.metalness * 0.7
-      s.roughness = Math.min(1, presetDef.roughness + 0.15)
+      // 图片本身可能带透明，开启 alpha 混合；不透明图片无影响
+      f.transparent = true
+      f.alphaTest = 0.01
 
       if (presetDef.emissiveIntensity > 0) {
         f.emissive = new THREE.Color(0xffffff)
@@ -628,7 +738,7 @@ export async function renderImageToCanvas(
       }
 
       f.needsUpdate = true
-      s.needsUpdate = true
+      // 侧面已在创建时设为图片边框色，applyMaterial 中无需再改
     },
   })
 }
