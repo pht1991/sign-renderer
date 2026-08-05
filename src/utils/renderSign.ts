@@ -61,19 +61,19 @@ interface CoreRenderInput {
 /**
  * 对 group 内所有 mesh 的顶点应用错切（shear），使厚度方向沿 wallTilt 倾斜。
  *
- * 变换保持「正面」（最靠近相机的 cap，即 z 最大处）的 XY 位置不变，让背面沿
+ * 变换保持「背面」（贴墙的一面，即 z 最小处）的 XY 位置不变，让正面沿
  * +tilt 方向偏移 shearAmount，从而在 signCanvas 中形成“正面相对背面朝 +tilt 倾斜”
- * 的厚度边。经过 warp 后，该向量正好对齐墙面法线，使厚度贴合外立面。
+ * 的厚度边。经过 warp 后，正面正好沿墙面外法线往外突出，贴合外立面。
  *
- * 正面由“全局最大 z”决定（而非调用方传入的固定 frontZ）：
- * - SVG ExtrudeGeometry 朝向相机的 cap 在 z=depth；
- * - 图片 BoxGeometry 平移后正面在 z=depth；
- * - 分层模式最上层在最大 z。
- * 之前错误地用 frontZ=0，把 SVG 的可见正面（z=depth）当成了背面去错切，导致标识偏移。
+ * 背面由“全局最小 z”决定：
+ * - SVG ExtrudeGeometry 贴墙的一面在 z=0；
+ * - 图片 ExtrudeGeometry 贴墙的一面在 z=0；
+ * - 分层模式最底层在最小 z。
+ * 之前错误地保持正面不动、把背面往外推，导致标识看起来凹进墙面。
  *
  * 关键：shearAmount 必须是受控的小量（由调用方按标识平面尺寸 + 厚度比例给出），
  * 绝对不能用原始的 depth（默认 30，远大于归一化后的 2 单位标识）直接平移——
- * 否则背面会被甩出画面、包围盒被撑大、相机视锥随之变大，正面标识被缩成极小（看着像“压扁”）。
+ * 否则正面会被甩出画面、包围盒被撑大、相机视锥随之变大，正面标识被缩成极小（看着像“压扁”）。
  */
 function applyWallTilt(
   group: THREE.Group,
@@ -81,7 +81,7 @@ function applyWallTilt(
   shearAmount = 0,
 ): void {
   if (shearAmount === 0) return
-  // 全局 z 范围：相机在 +Z 侧，z 最大者为可见正面、必须保持不动。
+  // 全局 z 范围：相机在 +Z 侧，z 最小者为贴墙背面、必须保持不动（与照片里的四边形对齐）。
   let zMinG = Infinity
   let zMaxG = -Infinity
   group.traverse((child) => {
@@ -96,7 +96,7 @@ function applyWallTilt(
   })
   if (!Number.isFinite(zMinG) || !Number.isFinite(zMaxG)) return
 
-  const frontZ = zMaxG
+  const backZ = zMinG
   const span = (zMaxG - zMinG) || 1
 
   // shearAmount 是按「世界（归一化）单位」算的（clampedShear 来自 frontSize），
@@ -115,7 +115,7 @@ function applyWallTilt(
         const x = pos.getX(i)
         const y = pos.getY(i)
         const z = pos.getZ(i)
-        const zr = (frontZ - z) / span // 正面=0（不动），背面=+1（偏移）
+        const zr = (z - backZ) / span // 背面=0（不动），正面=+1（沿 wallTilt 往外突出）
         pos.setXYZ(i, x + tilt.x * localShear * zr, y + tilt.y * localShear * zr, z)
       }
       pos.needsUpdate = true
@@ -142,9 +142,9 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   const natH = Math.max(preSize.y, 0.001)
   const naturalAspect = natW / natH
 
-  // 2) 厚度方向透视预倾斜：背面沿 wallTilt 偏移「实际世界厚度」preSize.z，
+  // 2) 厚度方向透视预倾斜：正面沿 wallTilt 偏移「实际世界厚度」preSize.z，
   //    使挤出方向严格贴合墙面法线，角度不受 depth 滑块额外缩放。
-  //    正面由 applyWallTilt 自动判定（z 最大处）并保持不动。
+  //    背面由 applyWallTilt 自动判定（z 最小处）并保持不动（与照片里的四边形对齐）。
   if (wallTilt) {
     applyWallTilt(group, wallTilt, preSize.z)
   }
@@ -699,12 +699,10 @@ export async function renderImageToCanvas(
   // 与 SVG 同一归一化：最大边（平面）= 2，厚度同步缩放到 0.3 量级
   normalizeGroup(group, 2)
 
-  // 图片标识对 wallTilt 的垂直分量做抑制：
-  // 建筑外立面 mostly 垂直，竖直方向透视导致的厚度边暴露容易在左下/右下形成深色角块；
-  // 保留水平分量让厚度贴合墙面的左右倾斜，并用 30% 的垂直分量保留一点上下透视。
+  // 图片标识的 wallTilt 不再抑制垂直分量：
+  // 方向修正后正面沿外法线往外突出，底部侧面是用户期望的立体效果；
+  // 侧面使用边框色 BasicMaterial，也不会形成深色角块。
   const dampedWallTilt = opts.wallTilt
-    ? { x: opts.wallTilt.x, y: opts.wallTilt.y * 0.3 }
-    : undefined
 
   return renderGroupToCanvas({
     group,
