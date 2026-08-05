@@ -278,7 +278,9 @@ export function computeSourceTilt(
   const sy = Jinv[2] * nImg.x + Jinv[3] * nImg.y
   const len = Math.hypot(sx, sy)
   if (len < 1e-6) return null
-  return { x: sx / len, y: sy / len }
+  // signCanvas 与照片的 y 轴同向（均向下），但 x 轴符号经单应映射后相反，
+  // 实测（无头 + 用户截图）显示厚度横切方向左右反了，这里取反 x 使其贴合外立面。
+  return { x: -sx / len, y: sy / len }
 }
 
 /**
