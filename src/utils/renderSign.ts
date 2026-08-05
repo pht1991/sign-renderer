@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { svgToGroup, normalizeGroup } from './svgToMesh'
 import { PRESETS, type SignPreset, type SvgBBox, detectSvgLayers } from './svgMeta'
+import { recoverCameraPose, type CameraPose, type Point } from './perspectiveWarp'
 
 /**
  * Three.js 离屏渲染：将标识渲染为带 3D 厚度 + 光照 + 材质质感的透明背景 Canvas
@@ -19,10 +20,11 @@ export interface RenderOptions {
   /** 主光强度系数，1 为默认，范围约 0.3~2.5 */
   lightIntensity?: number
   /**
-   * 墙面透视倾斜：标识渲染前对厚度方向做预倾斜，使挤出方向贴合外立面法线。
-   * 单位向量（signCanvas 空间），由照片中四边形估算得到；墙面正对相机时可不传。
+   * 真实 3D 透视投影：给定照片中四边形与画布尺寸，由单应分解反解相机位姿，
+   * 让标识沿墙面外法线做真实透视挤出（不再用正交相机 + 2D 错切近似）。
+   * 不传则回退到正交相机直视渲染（用于无照片/无标记点的独立预览）。
    */
-  wallTilt?: { x: number; y: number }
+  camera?: { quad: [Point, Point, Point, Point]; imgW: number; imgH: number }
   /** 立体分层：将 SVG 顶层 <g>/可绘制元素按图层分别拉伸并沿 Z 堆叠成浮雕 */
   layered?: boolean
   /** 层间距：相邻图层在 Z 方向的间隙（单位与 depth 一致），越大浮雕越明显 */
@@ -40,10 +42,10 @@ interface CoreRenderInput {
   /** 主光强度系数 */
   lightIntensity?: number
   /**
-   * 墙面透视倾斜：对厚度方向做预倾斜，使挤出方向贴合外立面法线。
-   * 在 group 归一化后应用，保持正面（frontZ）不变、背面沿该方向偏移。
+   * 真实 3D 透视投影：给定照片中四边形与画布尺寸，由单应分解反解相机位姿，
+   * 让标识沿墙面外法线做真实透视挤出。不传则回退到正交相机直视渲染。
    */
-  wallTilt?: { x: number; y: number }
+  camera?: { quad: [Point, Point, Point, Point]; imgW: number; imgH: number }
   /** 标识厚度（同一单位体系下的滑块值），用于把厚度侧边错切幅度限制在合理比例 */
   depth?: number
   /** 由调用方根据自身的材质数组顺序，设置正面 / 侧面材质 */
@@ -58,83 +60,24 @@ interface CoreRenderInput {
   enableShadow?: boolean
 }
 
-/**
- * 对 group 内所有 mesh 的顶点应用错切（shear），使厚度方向沿 wallTilt 倾斜。
- *
- * 变换保持「背面」（贴墙的一面，即 z 最小处）的 XY 位置不变，让正面沿
- * +tilt 方向偏移 shearAmount，从而在 signCanvas 中形成“正面相对背面朝 +tilt 倾斜”
- * 的厚度边。经过 warp 后，正面正好沿墙面外法线往外突出，贴合外立面。
- *
- * 背面由“全局最小 z”决定：
- * - SVG ExtrudeGeometry 贴墙的一面在 z=0；
- * - 图片 ExtrudeGeometry 贴墙的一面在 z=0；
- * - 分层模式最底层在最小 z。
- * 之前错误地保持正面不动、把背面往外推，导致标识看起来凹进墙面。
- *
- * 关键：shearAmount 必须是受控的小量（由调用方按标识平面尺寸 + 厚度比例给出），
- * 绝对不能用原始的 depth（默认 30，远大于归一化后的 2 单位标识）直接平移——
- * 否则正面会被甩出画面、包围盒被撑大、相机视锥随之变大，正面标识被缩成极小（看着像“压扁”）。
- */
-function applyWallTilt(
-  group: THREE.Group,
-  tilt: { x: number; y: number },
-  shearAmount = 0,
-): void {
-  if (shearAmount === 0) return
-  // 全局 z 范围：相机在 +Z 侧，z 最小者为贴墙背面、必须保持不动（与照片里的四边形对齐）。
-  let zMinG = Infinity
-  let zMaxG = -Infinity
-  group.traverse((child) => {
-    if (child instanceof THREE.Mesh && child.geometry?.attributes?.position) {
-      const pos = child.geometry.attributes.position
-      for (let i = 0; i < pos.count; i++) {
-        const z = pos.getZ(i)
-        if (z < zMinG) zMinG = z
-        if (z > zMaxG) zMaxG = z
-      }
-    }
-  })
-  if (!Number.isFinite(zMinG) || !Number.isFinite(zMaxG)) return
-
-  const backZ = zMinG
-  const span = (zMaxG - zMinG) || 1
-
-  // shearAmount 是按「世界（归一化）单位」算的（clampedShear 来自 frontSize），
-  // 但 geometry 顶点仍是原始单位（normalizeGroup 是通过 group.scale 缩放的，不改 geometry）。
-  // 必须把 shear 换算回 geometry 局部单位，否则被 group 缩放系数（~0.01）一起缩小，
-  // 导致错切幅度被压成 ~0.2px、厚度倾斜完全看不出来（之前 SVG/图片厚度“还原”的根因）。
-  const localScale = group.scale.x || 1
-  const localShear = shearAmount / localScale
-
-  group.traverse((child) => {
-    if (child instanceof THREE.Mesh && child.geometry) {
-      const pos = child.geometry.attributes.position
-      if (!pos) return
-
-      for (let i = 0; i < pos.count; i++) {
-        const x = pos.getX(i)
-        const y = pos.getY(i)
-        const z = pos.getZ(i)
-        const zr = (z - backZ) / span // 背面=0（不动），正面=+1（沿 wallTilt 往外突出）
-        pos.setXYZ(i, x + tilt.x * localShear * zr, y + tilt.y * localShear * zr, z)
-      }
-      pos.needsUpdate = true
-      child.geometry.computeBoundingBox()
-      child.geometry.computeBoundingSphere()
-    }
-  })
-}
+// applyWallTilt 已移除：厚度方向现在由 recoverCameraPose 反解的相机位姿 +
+// 真实透视投影决定，不再用 2D 错切近似（见 renderGroupToCanvas 的透视分支）。
 
 /**
  * 共用渲染核心：搭建场景 / 相机 / 光照 / 环境贴图 → 应用材质 → 渲染 → 导出 canvas → 清理
  * SVG 标识与图片标识共用此函数，保证光感、材质、导出格式完全一致。
+ *
+ * 当传入 `camera`（照片四边形 + 画布尺寸）时，采用「真实 3D 透视投影」：
+ * 把标识前脸贴到墙面（z=0）、沿墙面外法线做透视挤出，用反解出的透视相机渲染，
+ * 输出的 canvas 已位于照片坐标系（无需再 warp）。厚度方向完全由几何动态决定。
+ * 否则回退到正交相机直视渲染（用于无照片/无标记点的独立预览）。
  */
 async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasElement> {
-  const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false, wallTilt, depth } = input
+  const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false, camera, depth } = input
 
-  // 1) 错切前包围盒：取正面平面尺寸与自然比例，用于决定画布比例。
-  //    拉伸模式（stretch）下 group 已被拉成 2×2，naturalAspect≈1；
-  //    非拉伸模式天然保留标识真实比例（如 2.5:1 横向 LOGO）。
+  // 包围盒：取正面平面尺寸与自然比例，并判定前脸（z 最大面）用于贴墙定位。
+  // 拉伸模式（stretch）下 group 已被拉成 2×2，naturalAspect≈1；
+  // 非拉伸模式天然保留标识真实比例（如 2.5:1 横向 LOGO）。
   const preBox = new THREE.Box3().setFromObject(group)
   const preSize = new THREE.Vector3()
   preBox.getSize(preSize)
@@ -142,24 +85,20 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   const natH = Math.max(preSize.y, 0.001)
   const naturalAspect = natW / natH
 
-  // 2) 厚度方向透视预倾斜：正面沿 wallTilt 偏移「实际世界厚度」preSize.z，
-  //    使挤出方向严格贴合墙面法线，角度不受 depth 滑块额外缩放。
-  //    背面由 applyWallTilt 自动判定（z 最小处）并保持不动（与照片里的四边形对齐）。
-  if (wallTilt) {
-    applyWallTilt(group, wallTilt, preSize.z)
+  if (camera) {
+    return renderPerspective(input, preBox, naturalAspect)
   }
 
   const scene = new THREE.Scene()
   scene.add(group)
 
-  // 3) 错切后包围盒：决定相机取景范围。
   const postBox = new THREE.Box3().setFromObject(group)
   const postSize = new THREE.Vector3()
   postBox.getSize(postSize)
   const contentCenter = postBox.getCenter(new THREE.Vector3())
 
-  // 4) 画布尺寸：跟随标识自然宽高比；当厚度倾斜使背面超出正面范围时，
-  //    提高渲染分辨率（而非缩小正面），保证正面像素密度不变、厚度边可见。
+  // 画布尺寸：跟随标识自然宽高比；当厚度倾斜使背面超出正面范围时，
+  // 提高渲染分辨率（而非缩小正面），保证正面像素密度不变、厚度边可见。
   const scaleUpX = Math.max(1, postSize.x / natW)
   const scaleUpY = Math.max(1, postSize.y / natH)
   const scaleUp = Math.min(2.0, Math.max(scaleUpX, scaleUpY))
@@ -175,24 +114,20 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
     canvasH = renderSizeEff
   }
 
-  // 5) 正交相机：视锥按错切后内容取景，但比例保持自然比例，
-  //    使正面 logo 在画布上保持原比例、不被厚度边撑小。
+  // 正交相机：视锥按内容取景，比例保持自然比例，使正面 logo 保持原比例不被撑小。
   const margin = 1.03
   const contentHalfW = Math.max(postSize.x, 0.001) / 2
   const contentHalfH = Math.max(postSize.y, 0.001) / 2
   const halfW = Math.max(contentHalfW, contentHalfH * naturalAspect) * margin
   const halfH = halfW / naturalAspect
 
-  // 相机 z 位置必须位于标识「正面」（z 最大面）之前：
-  // 图片/分层标识的正面在 +z（z = 厚度归一化后的值），SVG 标识的图案 cap 也在 +z；
-  // 用包围盒最大 z + 余量，保证正面恒在相机前方，不会被裁掉（否则图片看不见）。
   const cameraZ = preBox.max.z + 5
-  const camera = new THREE.OrthographicCamera(
+  const ortho = new THREE.OrthographicCamera(
     -halfW, halfW, halfH, -halfH,
     0.1, cameraZ + halfW + 10,
   )
-  camera.position.set(contentCenter.x, contentCenter.y, cameraZ)
-  camera.lookAt(contentCenter.x, contentCenter.y, 0)
+  ortho.position.set(contentCenter.x, contentCenter.y, cameraZ)
+  ortho.lookAt(contentCenter.x, contentCenter.y, 0)
 
   const renderer = new THREE.WebGLRenderer({
     alpha: true,
@@ -207,16 +142,12 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
     renderer.shadowMap.type = THREE.PCFSoftShadowMap
   }
 
-  // 环境反射：渐变环境贴图，让金属/亚克力质感真实（避免金属发黑）
   const env = buildEnvTexture(renderer, ambientColor)
   if (env) scene.environment = env
 
-  // 光照系统：主光（方位角 + 强度可调） + 补光 + 轮廓光 + 环境光（由照片平均色驱动）
-  // 分层模式下降低环境/补光，让主光投影更突出，层间距变化才能被肉眼察觉
   const tint = ambientColor ? new THREE.Color(ambientColor) : new THREE.Color(0xffffff)
   scene.add(new THREE.AmbientLight(tint.getHex(), enableShadow ? 0.35 : 0.6))
 
-  // 主光方向：方位角 az（-90~90，0=正前），俯仰固定 30°，保证光恒在正面半区（z≥0）不把招牌打黑
   const lightAz = ((input.lightAzimuth ?? 0) * Math.PI) / 180
   const lightEl = (30 * Math.PI) / 180
   const lightR = 6
@@ -226,7 +157,6 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   const keyLight = new THREE.DirectionalLight(0xffffff, 1.5 * (input.lightIntensity ?? 1))
   keyLight.position.set(lx, ly, lz)
   if (enableShadow) {
-    // 主光投影：覆盖整个标识（归一化后最大边=2），高分辨率软阴影
     keyLight.castShadow = true
     keyLight.shadow.mapSize.set(2048, 2048)
     const sc = keyLight.shadow.camera
@@ -252,7 +182,6 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   rimLight.position.set(0, 2, -3)
   scene.add(rimLight)
 
-  // 应用材质（正面 / 侧面由调用方决定）
   group.traverse((child) => {
     if (child instanceof THREE.Mesh && Array.isArray(child.material)) {
       applyMaterial(child)
@@ -263,16 +192,14 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
     }
   })
 
-  renderer.render(scene, camera)
+  renderer.render(scene, ortho)
 
-  // 导出 canvas：尺寸与渲染画布一致（跟随标识自然比例，非方形）
   const canvas = document.createElement('canvas')
   canvas.width = canvasW
   canvas.height = canvasH
   const ctx = canvas.getContext('2d')!
   ctx.drawImage(renderer.domElement, 0, 0)
 
-  // 清理 GPU 资源
   scene.traverse((obj) => {
     if (obj instanceof THREE.Mesh) {
       obj.geometry?.dispose()
@@ -281,6 +208,177 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
     }
   })
   extraDispose.forEach((t) => t.dispose())
+  if (env) env.dispose()
+  renderer.dispose()
+
+  return canvas
+}
+
+/**
+ * 真实 3D 透视渲染：标识前脸贴墙（z=0）、沿外法线透视挤出，用反解相机渲染。
+ * 输出 canvas 尺寸 = 照片画布尺寸（受 cap 限制），已位于照片坐标系，合成时直接贴图。
+ */
+async function renderPerspective(
+  input: CoreRenderInput,
+  preBox: THREE.Box3,
+  naturalAspect: number,
+): Promise<HTMLCanvasElement> {
+  const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false, camera } = input
+  const cam = camera!
+
+  // 关键：把“贴墙那一面”（z 最小面 = 挤出几何体的背面/安装面）对齐到墙面 z=0。
+  // 标识正面（贴图面，z 最大面）随之位于 +Z 方向；而经单应反解，世界 +Z 正是
+  // 朝相机的方向（见 camera-space 验证：body(+Z) 的相机 z 更小=更近），于是标识
+  // 自然从墙面“往外突出”，而非陷入墙内。厚度边在真实透视投影下呈现长方体立体感，
+  // 方向完全由几何动态决定（随四边形形状 / 远近 / 视角自然变化），无任何写死。
+  // 同时：图片标识的完整贴图在 zMax cap 上，此平移后它恰好成为朝相机的最近面（可见面），
+  // 背面（默认 UV）落在墙面上被遮挡——贴图朝向正确。
+  const backZ = preBox.min.z
+  group.position.z += -backZ
+
+  // 模型矩形（前脸包围盒，与 normalizeGroup 后一致）：最大边=2、居中、z=0。
+  const hw = Math.max((preBox.max.x - preBox.min.x) / 2, 1e-4)
+  const hh = Math.max((preBox.max.y - preBox.min.y) / 2, 1e-4)
+  const modelRect: [Point, Point, Point, Point] = [
+    { x: -hw, y: hh },
+    { x: hw, y: hh },
+    { x: hw, y: -hh },
+    { x: -hw, y: -hh },
+  ]
+
+  // 渲染分辨率上限（大照片降档以保性能/显存），并同步缩放 quad 与画布。
+  const maxDim = Math.max(cam.imgW, cam.imgH)
+  const cap = 2000
+  const scale = maxDim > cap ? cap / maxDim : 1
+  const W = Math.max(1, Math.round(cam.imgW * scale))
+  const Hh = Math.max(1, Math.round(cam.imgH * scale))
+  const q: [Point, Point, Point, Point] = cam.quad.map((p) => ({
+    x: p.x * scale,
+    y: p.y * scale,
+  })) as [Point, Point, Point, Point]
+
+  const pose: CameraPose | null = recoverCameraPose(modelRect, q, W, Hh)
+  if (!pose) {
+    // 退化：恢复前脸位置并回退正交渲染，避免整段渲染失败。
+    group.position.z += backZ
+    return renderGroupToCanvas({ ...input, camera: undefined })
+  }
+
+  const R = pose.R
+  const t = pose.t
+  // 相机距离（用于 near/far 取值）
+  const dist = Math.hypot(t[0], t[1], t[2]) || 5
+
+  const scene = new THREE.Scene()
+  scene.add(group)
+
+  const renderer = new THREE.WebGLRenderer({
+    alpha: true,
+    antialias: true,
+    preserveDrawingBuffer: true,
+  })
+  renderer.setSize(W, Hh)
+  renderer.setClearColor(0x000000, 0)
+  renderer.setPixelRatio(1)
+  if (enableShadow) {
+    renderer.shadowMap.enabled = true
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  }
+
+  const env = buildEnvTexture(renderer, ambientColor)
+  if (env) scene.environment = env
+
+  const tint = ambientColor ? new THREE.Color(ambientColor) : new THREE.Color(0xffffff)
+  scene.add(new THREE.AmbientLight(tint.getHex(), enableShadow ? 0.35 : 0.6))
+
+  // 主光：方位角 + 固定俯仰，保证正面（朝相机）被照亮；侧/厚度随视角自然受光。
+  const lightAz = ((input.lightAzimuth ?? 0) * Math.PI) / 180
+  const lightEl = (30 * Math.PI) / 180
+  const lightR = 6
+  const lx = Math.sin(lightAz) * Math.cos(lightEl) * lightR
+  const ly = Math.sin(lightEl) * lightR
+  const lz = Math.cos(lightAz) * Math.cos(lightEl) * lightR
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.5 * (input.lightIntensity ?? 1))
+  keyLight.position.set(lx, ly, lz)
+  if (enableShadow) {
+    keyLight.castShadow = true
+    keyLight.shadow.mapSize.set(2048, 2048)
+    const sc = keyLight.shadow.camera
+    sc.left = -3
+    sc.right = 3
+    sc.top = 3
+    sc.bottom = -3
+    sc.near = 0.1
+    sc.far = 50
+    keyLight.shadow.bias = -0.0008
+    keyLight.shadow.normalBias = 0.02
+    keyLight.shadow.radius = 10
+    keyLight.target.position.set(0, 0, 0)
+    scene.add(keyLight.target)
+  }
+  scene.add(keyLight)
+
+  const fillLight = new THREE.DirectionalLight(0xaabbff, enableShadow ? 0.25 : 0.6)
+  fillLight.position.set(-3, -1, 2)
+  scene.add(fillLight)
+
+  const rimLight = new THREE.DirectionalLight(0xffeecc, enableShadow ? 0.25 : 0.5)
+  rimLight.position.set(0, 2, -3)
+  scene.add(rimLight)
+
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh && Array.isArray(child.material)) {
+      applyMaterial(child)
+      if (enableShadow) {
+        child.castShadow = true
+        child.receiveShadow = true
+      }
+    }
+  })
+
+  // ---- 透视相机：用 Three.js 内置 PerspectiveCamera 恢复相机位姿 ----
+  // 单应分解给出 OpenCV 约定下的 world→camera：[R|t]，p_cam = R·p_world + t，相机看向 +Z。
+  // WebGL/Three.js 相机看向 -Z 且 Y 轴与图像 Y 反向，因此视图矩阵需经 diag(1,-1,-1)
+  // 转换：V = diag(1,-1,-1)·[R|t]。对应的相机世界姿态为：
+  //   worldRot = V^T = R^T · diag(1,-1,-1)
+  //   C        = -R^T · t
+  // 这样相机看向墙面（沿 r3），墙面位于相机前方（本地 -Z，即 WebGL 可见区域），
+  // 标识正面（+Z）朝相机突出，方向完全由几何动态决定。
+  const camera3d = new THREE.PerspectiveCamera()
+  const worldRot = new THREE.Matrix4().set(
+    R[0], -R[3], -R[6], 0,
+    R[1], -R[4], -R[7], 0,
+    R[2], -R[5], -R[8], 0,
+    0, 0, 0, 1,
+  )
+  const Rt = new THREE.Matrix3().set(R[0], R[3], R[6], R[1], R[4], R[7], R[2], R[5], R[8])
+  const center = new THREE.Vector3(t[0], t[1], t[2]).applyMatrix3(Rt).negate()
+  camera3d.position.copy(center)
+  camera3d.quaternion.setFromRotationMatrix(worldRot)
+  // 焦距 f = max(W,H) 对应垂直 FOV：tan(fov/2) = Hh/(2f)
+  camera3d.fov = (2 * Math.atan(Hh / (2 * pose.fx)) * 180) / Math.PI
+  camera3d.aspect = W / Hh
+  camera3d.near = Math.max(0.001, dist * 0.05)
+  camera3d.far = dist * 20 + 10
+  camera3d.updateProjectionMatrix()
+  camera3d.updateMatrixWorld()
+
+  renderer.render(scene, camera3d)
+
+  const canvas = document.createElement('canvas')
+  canvas.width = W
+  canvas.height = Hh
+  const ctx = canvas.getContext('2d')!
+  ctx.drawImage(renderer.domElement, 0, 0)
+
+  scene.traverse((obj) => {
+    if (obj instanceof THREE.Mesh) {
+      obj.geometry?.dispose()
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
+      mats.forEach((m) => m?.dispose())
+    }
+  })
+  extraDispose.forEach((t2) => t2.dispose())
   if (env) env.dispose()
   renderer.dispose()
 
@@ -303,7 +401,7 @@ export async function renderSignToCanvas(
     ambientColor,
     lightAzimuth,
     lightIntensity,
-    wallTilt,
+    camera,
     layered = false,
     layerGap = 10,
   } = opts
@@ -319,7 +417,7 @@ export async function renderSignToCanvas(
       ambientColor,
       lightAzimuth,
       lightIntensity,
-      wallTilt,
+      camera,
       layerGap,
       overrideColor,
       stretch,
@@ -359,7 +457,7 @@ export async function renderSignToCanvas(
     preset,
     lightAzimuth,
     lightIntensity,
-    wallTilt,
+    camera,
     depth,
     extraDispose: mapTex ? [mapTex] : [],
     applyMaterial: (mesh) => {
@@ -415,13 +513,13 @@ async function renderLayeredToCanvas(
     ambientColor?: string
     lightAzimuth?: number
     lightIntensity?: number
-    wallTilt?: { x: number; y: number }
+    camera?: { quad: [Point, Point, Point, Point]; imgW: number; imgH: number }
     layerGap: number
     overrideColor: THREE.Color | null
     stretch?: boolean
   },
 ): Promise<HTMLCanvasElement | null> {
-  const { preset, ambientColor, lightAzimuth, lightIntensity, wallTilt, layerGap, overrideColor, stretch = false } = opts
+  const { preset, ambientColor, lightAzimuth, lightIntensity, camera, layerGap, overrideColor, stretch = false } = opts
 
   // 逐层解析几何，过滤掉零几何图层（如 <text>、空 <g> 等 SVGLoader 无法拉伸的内容）
   const built = layers.map((ly) => ({ sub: svgToGroup(ly.svg, depth, true), svg: ly.svg }))
@@ -488,7 +586,7 @@ async function renderLayeredToCanvas(
     preset,
     lightAzimuth,
     lightIntensity,
-    wallTilt,
+    camera,
     extraDispose,
     // 层间立体感靠上层在下层的投影体现：间距越大影子偏移越大
     enableShadow: true,
@@ -605,7 +703,7 @@ export async function renderImageToCanvas(
   renderSize: number = 512,
   opts: RenderOptions = {},
 ): Promise<HTMLCanvasElement> {
-  const { color = '#dddddd', preset = 'matte', ambientColor, lightAzimuth, lightIntensity } = opts
+  const { color = '#dddddd', preset = 'matte', ambientColor, lightAzimuth, lightIntensity, camera } = opts
 
   // 与 SVG 同一单位体系：先用名义 200 单位构建平面（保持原图比例），厚度用滑块值，
   // 再整体归一化到最大边=2，使厚度进入 0.3 量级，相机/错切/厚度倾斜与 SVG 一致。
@@ -699,11 +797,6 @@ export async function renderImageToCanvas(
   // 与 SVG 同一归一化：最大边（平面）= 2，厚度同步缩放到 0.3 量级
   normalizeGroup(group, 2)
 
-  // 图片标识的 wallTilt 不再抑制垂直分量：
-  // 方向修正后正面沿外法线往外突出，底部侧面是用户期望的立体效果；
-  // 侧面使用边框色 BasicMaterial，也不会形成深色角块。
-  const dampedWallTilt = opts.wallTilt
-
   return renderGroupToCanvas({
     group,
     renderSize,
@@ -711,7 +804,7 @@ export async function renderImageToCanvas(
     preset,
     lightAzimuth,
     lightIntensity,
-    wallTilt: dampedWallTilt,
+    camera,
     depth,
     extraDispose: [imgTex],
     applyMaterial: (m) => {

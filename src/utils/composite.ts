@@ -1,4 +1,4 @@
-import { warpPerspective, type Point } from './perspectiveWarp'
+import { type Point } from './perspectiveWarp'
 
 // 导出像素上限：避免 4x 导出大照片时 canvas 超过浏览器上限（约 16384 边）或爆内存
 export const MAX_EXPORT_DIM = 8000
@@ -106,32 +106,24 @@ export function compositeImage(
     { x: points[3].x * scaleX, y: points[3].y * scaleY },
   ]
 
-  // 透视变换并绘制标识
-  // 先把标识 warp 到临时 canvas，便于叠加柔和接触阴影
-  const tmp = document.createElement('canvas')
-  tmp.width = canvas.width
-  tmp.height = canvas.height
-  const tctx = tmp.getContext('2d')!
-  warpPerspective(tctx, signCanvas, signCanvas.width, signCanvas.height, dstPoints)
-
-  // 柔和接触阴影：让标识"贴"在墙上有立体感，避免生硬/悬浮。
-  // 用公共 contactShadowPasses（与实时预览共用），偏移克制、双层柔化。
+  // signCanvas 已是照片坐标系里的透视投影图（带 alpha），1:1 贴到合成图
+  // （与渲染分辨率同比例，导出高倍率时自动等比放大，保持清晰）。
   const sp = contactShadowPasses(canvas.width, shadowDepth, shadowAzimuth)
   ctx.save()
   ctx.shadowColor = sp.outer.color
   ctx.shadowBlur = sp.outer.blur
   ctx.shadowOffsetX = sp.outer.offX
   ctx.shadowOffsetY = sp.outer.offY
-  ctx.drawImage(tmp, 0, 0)
+  ctx.drawImage(signCanvas, 0, 0, canvas.width, canvas.height)
   ctx.shadowColor = sp.inner.color
   ctx.shadowBlur = sp.inner.blur
   ctx.shadowOffsetX = sp.inner.offX
   ctx.shadowOffsetY = sp.inner.offY
-  ctx.drawImage(tmp, 0, 0)
+  ctx.drawImage(signCanvas, 0, 0, canvas.width, canvas.height)
   ctx.restore()
 
   // 再绘制清晰标识（无阴影）
-  ctx.drawImage(tmp, 0, 0)
+  ctx.drawImage(signCanvas, 0, 0, canvas.width, canvas.height)
 
   // 绘制四点标记（参考线，半透明）
   drawGuideLines(ctx, dstPoints)

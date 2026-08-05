@@ -153,134 +153,106 @@ function applyHomography(H: Matrix3, p: Point): Point {
 }
 
 /**
- * 估算照片中墙面的法线方向（2D 投影）。
+ * 相机位姿：由单应矩阵分解得到的内外参。
  *
- * 原理：矩形墙面的两组对边在透视下分别相交于两个灭点，灭点连线为灭线；
- * 墙面法线在照片中的投影垂直于灭线。返回单位向量，符号指向观众（图像中心）。
+ * - 内参 K = diag(fx, fy, 1)，主点 (cx, cy)；
+ * - 外参 world→camera：Xc = R·Xw + t，R 为 3×3 行主序，t 为相机空间平移。
+ *
+ * 标识正面（模型 z=0）在该相机下精确映射到照片四边形；厚度方向（世界 +Z）
+ * 即墙面外法线，挤出后侧/厚度在透视投影下自动呈现真实长方体效果——
+ * 方向完全由几何动态决定，随四边形形状、远近、视角自然变化，无任何写死。
  */
-export function estimateWallNormal(
+export interface CameraPose {
+  fx: number
+  fy: number
+  cx: number
+  cy: number
+  R: number[] // 9，行主序
+  t: number[] // 3
+}
+
+/**
+ * 由标识正面矩形（模型坐标，z=0）与照片中四边形反解相机位姿。
+ *
+ * 原理：单应 H 将正面矩形映射到照片四边形；对针孔相机 K（主点取画面中心、
+ * 焦距取典型建筑照片 FOV≈53°，即 max(W,H) 量级）作分解 H = K·[r1 r2 t]，
+ * 得到世界 X/Y 轴在相机空间的朝向 r1/r2 与平移 t，法线 r3 = r1×r2 即墙面
+ * 外法线（世界 +Z）。因 H 由矩形↔四边形精确求得，正面必精确贴合四边形，
+ * 厚度方向由 r3 决定——像真实长方体那样随视角/远近动态变化。
+ *
+ * @param modelRect 标识正面矩形四角 [左上,右上,右下,左下]（模型坐标，须与渲染
+ *                   管线中 normalizeGroup 后的前脸包围盒一致：最大边=2、居中）
+ * @param quad       照片中四边形四角（与 modelRect 同序，单位须与 imgW/imgH 一致）
+ * @param imgW       画布宽（与 quad 同单位）
+ * @param imgH       画布高
+ */
+export function recoverCameraPose(
+  modelRect: [Point, Point, Point, Point],
   quad: [Point, Point, Point, Point],
   imgW: number,
   imgH: number,
-): { x: number; y: number } | null {
-  const [tl, tr, br, bl] = quad
+): CameraPose | null {
+  const H = solveHomography(modelRect, quad)
+  if (!H) return null
 
-  // 上下边灭点（垂直方向平行线）与左右边灭点（水平方向平行线）
-  const vpY = lineIntersection(tl, tr, bl, br)
-  const vpX = lineIntersection(tl, bl, tr, br)
+  const cx = imgW / 2
+  const cy = imgH / 2
+  // 典型建筑照片垂直 FOV≈53°，焦距取 max(W,H) 量级；仅影响透视强弱，不改变方向正确性
+  const f = Math.max(imgW, imgH)
 
-  let dx = 0
-  let dy = 0
-  let valid = false
+  // M = K^-1 · H  = [r1 r2 t]
+  // 注意：r1/r2 必须保留 H 自带的「模型单位→像素」缩放，绝不能归一化为单位向量——
+  // 否则投影尺度错乱、前脸无法贴合四边形。直接用 M 的列，P=K·[R|t] 才能精确还原 H。
+  const Kinv: Matrix3 = [1 / f, 0, -cx / f, 0, 1 / f, -cy / f, 0, 0, 1]
+  const M = mul3(Kinv, H)
 
-  if (vpX && vpY) {
-    const vx = vpX.x - vpY.x
-    const vy = vpX.y - vpY.y
-    // 墙面法线垂直于灭线
-    dx = -vy
-    dy = vx
-    valid = true
-  } else if (vpX) {
-    // 左右边平行：墙面绕垂直轴不转，法线方向近似垂直于上下边中点连线
-    const mx = (tl.x + tr.x - bl.x - br.x) / 2
-    const my = (tl.y + tr.y - bl.y - br.y) / 2
-    dx = -my
-    dy = mx
-    valid = true
-  } else if (vpY) {
-    // 上下边平行：墙面绕水平轴不转，法线方向近似垂直于左右边中点连线
-    const mx = (tr.x + br.x - tl.x - bl.x) / 2
-    const my = (tr.y + br.y - tl.y - bl.y) / 2
-    dx = -my
-    dy = mx
-    valid = true
-  }
+  const r1 = col3(M, 0)
+  const r2 = col3(M, 1)
+  const t = col3(M, 2)
 
-  if (!valid) return null
+  // 把 r1/r2 归一化为单位旋转列；同时把 t 除以同一尺度，使 K·[R|t] 与 H 保持
+  // 射影等价，前脸(z=0)仍能精确映射到四边形。若不统一缩放 t，相机位置会错乱，
+  // 甚至陷进标识几何体内部导致渲染为空。
+  const len1 = Math.hypot(...r1)
+  const len2 = Math.hypot(...r2)
+  const scale = (len1 + len2) / 2 || 1
+  const nr1: [number, number, number] = [r1[0] / scale, r1[1] / scale, r1[2] / scale]
+  const nr2: [number, number, number] = [r2[0] / scale, r2[1] / scale, r2[2] / scale]
+  const nt: [number, number, number] = [t[0] / scale, t[1] / scale, t[2] / scale]
 
-  const len = Math.hypot(dx, dy)
-  if (len < 1e-6) return null
-  dx /= len
-  dy /= len
+  // 法线 r3 = nr1 × nr2（墙面外法线，世界 +Z 在 OpenCV 相机空间的朝向），挤出方向由此决定。
+  // 注意：OpenCV 相机看向 +Z，而 WebGL/Three.js 相机看向 -Z；renderSign 会把视图矩阵
+  // 通过 diag(1,-1,-1) 转换到 WebGL 约定，保证墙面位于可见区域且厚度朝相机突出。
+  const r3 = cross3(nr1, nr2)
 
-  // 选择指向观众的符号：大致指向图像中心
-  const cx = (tl.x + tr.x + br.x + bl.x) / 4
-  const cy = (tl.y + tr.y + br.y + bl.y) / 4
-  const toCenterX = imgW / 2 - cx
-  const toCenterY = imgH / 2 - cy
-  if (dx * toCenterX + dy * toCenterY < 0) {
-    dx = -dx
-    dy = -dy
-  }
-
-  return { x: dx, y: dy }
+  const R = [nr1[0], nr2[0], r3[0], nr1[1], nr2[1], r3[1], nr1[2], nr2[2], r3[2]]
+  return { fx: f, fy: f, cx, cy, R, t: [nt[0], nt[1], nt[2]] }
 }
 
-/**
- * 求两条直线（分别由点 a1-a2 和 b1-b2 确定）的交点；平行时返回 null。
- */
-function lineIntersection(a1: Point, a2: Point, b1: Point, b2: Point): Point | null {
-  const dx1 = a2.x - a1.x
-  const dy1 = a2.y - a1.y
-  const dx2 = b2.x - b1.x
-  const dy2 = b2.y - b1.y
-  const det = dx1 * dy2 - dy1 * dx2
-  if (Math.abs(det) < 1e-6) return null
-  const t = ((b1.x - a1.x) * dy2 - (b1.y - a1.y) * dx2) / det
-  return { x: a1.x + t * dx1, y: a1.y + t * dy1 }
+// ---- 3×3 矩阵 / 向量小工具（行主序） ----
+function mul3(A: Matrix3, B: Matrix3): Matrix3 {
+  const C: number[] = new Array(9).fill(0)
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) {
+      let s = 0
+      for (let k = 0; k < 3; k++) s += A[i * 3 + k] * B[k * 3 + j]
+      C[i * 3 + j] = s
+    }
+  }
+  return C as Matrix3
 }
-
-/**
- * 计算单应矩阵 H 在点 (x,y) 处的 2x2 雅可比矩阵。
- * 返回 [dXdx, dXdy, dYdx, dYdy]，作用于齐次坐标归一化后的向量。
- */
-function jacobianOfHomography(H: Matrix3, x: number, y: number): [number, number, number, number] | null {
-  const D = H[6] * x + H[7] * y + H[8]
-  if (Math.abs(D) < 1e-10) return null
-  const X = (H[0] * x + H[1] * y + H[2]) / D
-  const Y = (H[3] * x + H[4] * y + H[5]) / D
-  const invD = 1 / D
+function col3(M: Matrix3, j: number): [number, number, number] {
+  return [M[j], M[3 + j], M[6 + j]]
+}
+function cross3(
+  a: [number, number, number],
+  b: [number, number, number],
+): [number, number, number] {
   return [
-    (H[0] - X * H[6]) * invD,
-    (H[1] - X * H[7]) * invD,
-    (H[3] - Y * H[6]) * invD,
-    (H[4] - Y * H[7]) * invD,
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
   ]
-}
-
-/**
- * 根据目标四边形（照片中的标识框）计算源画布（signCanvas）空间中
- * 厚度应预倾斜的方向。返回单位向量；若墙面近似正对相机则返回 null。
- */
-export function computeSourceTilt(
-  quad: [Point, Point, Point, Point],
-  srcW: number,
-  srcH: number,
-): { x: number; y: number } | null {
-  const nImg = estimateWallNormal(quad, srcW, srcH)
-  if (!nImg) return null
-
-  const src: [Point, Point, Point, Point] = [
-    { x: 0, y: 0 },
-    { x: srcW, y: 0 },
-    { x: srcW, y: srcH },
-    { x: 0, y: srcH },
-  ]
-  const Hinv = solveHomography(quad, src)
-  if (!Hinv) return null
-
-  const cx = (quad[0].x + quad[2].x) / 2
-  const cy = (quad[0].y + quad[2].y) / 2
-  const Jinv = jacobianOfHomography(Hinv, cx, cy)
-  if (!Jinv) return null
-
-  const sx = Jinv[0] * nImg.x + Jinv[1] * nImg.y
-  const sy = Jinv[2] * nImg.x + Jinv[3] * nImg.y
-  const len = Math.hypot(sx, sy)
-  if (len < 1e-6) return null
-  // signCanvas 与照片的 y 轴同向（均向下），但 x 轴符号经单应映射后相反，
-  // 实测（无头 + 用户截图）显示厚度横切方向左右反了，这里取反 x 使其贴合外立面。
-  return { x: -sx / len, y: sy / len }
 }
 
 /**

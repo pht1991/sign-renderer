@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { pdfFileToImage } from './utils/pdfToImage'
 import { PRESETS, type SignPreset, detectSvgLayers } from './utils/svgMeta'
-import { warpPerspective, type Point, computeSourceTilt } from './utils/perspectiveWarp'
+import { warpPerspective, type Point } from './utils/perspectiveWarp'
 import { compositeImage, downloadCanvas, safeExportScale, contactShadowPasses } from './utils/composite'
 
 /**
@@ -438,12 +438,24 @@ export default function App() {
     // 渲染本身是重活（SVG 解析 + ExtrudeGeometry 拉伸 / 图片贴图），
     // 拖动滑块等高频参数变化会连续触发，用 250ms 防抖合并为一次渲染，避免卡顿。
     const run = async (): Promise<HTMLCanvasElement> => {
-      // 根据照片中标识框的透视，估算 signCanvas 空间中厚度应预倾斜的方向。
-      // 这样渲染出来的厚度边经 warp 后会贴合墙面法线，而不是垂直于屏幕。
-      const wallTilt =
-        displaySize.w && displaySize.h
-          ? computeSourceTilt(points, displaySize.w, displaySize.h)
-          : null
+      // 由照片中标识四边形 + 画布尺寸反解相机位姿：让标识沿墙面真实外法线做
+      // 3D 透视挤出，厚度方向完全由几何动态决定（随四边形形状/远近/视角变化），
+      // 不再用任何写死的 2D 错切方向。
+      const photo = photoRef.current
+      const natW = photo?.naturalWidth || displaySize.w
+      const natH = photo?.naturalHeight || displaySize.h
+      const quadValid = displaySize.w > 0 && displaySize.h > 0 && isQuadValid(points) === null
+      const camera =
+        photo && quadValid
+          ? {
+              quad: points.map((p) => ({
+                x: (p.x / displaySize.w) * natW,
+                y: (p.y / displaySize.h) * natH,
+              })) as [Point, Point, Point, Point],
+              imgW: natW,
+              imgH: natH,
+            }
+          : undefined
 
       // 动态引入渲染器：把 Three.js + 渲染管线拆成独立 chunk，
       // 首屏只加载 React UI，渲染引擎在首次需要时再异步加载，首屏更快。
@@ -456,7 +468,7 @@ export default function App() {
           ambientColor: ambientColor || undefined,
           lightAzimuth,
           lightIntensity,
-          wallTilt: wallTilt ?? undefined,
+          camera,
           layered: layerCount > 1 ? layered : false,
           layerGap,
         })
@@ -472,7 +484,7 @@ export default function App() {
             ambientColor: ambientColor || undefined,
             lightAzimuth,
             lightIntensity,
-            wallTilt: wallTilt ?? undefined,
+            camera,
           }).then(resolve)
         }
         img.onerror = () => {
@@ -520,32 +532,32 @@ export default function App() {
     const ctx = overlay.getContext('2d')!
     ctx.clearRect(0, 0, overlay.width, overlay.height)
 
-    // 在显示尺寸下做透视变换预览，并叠加与导出一致的柔和接触阴影
-    // （所见即所得：调光角度时预览即可看到阴影方向/软硬变化）
+    // signCanvas 已是照片坐标系里的透视投影图（带 alpha），直接 1:1 贴到 overlay；
+    // 叠加与导出一致的柔和接触阴影（所见即所得：调光角度时预览即可看到阴影方向/软硬变化）
     const sp = contactShadowPasses(overlay.width, depth, lightAzimuth)
     ctx.save()
     ctx.shadowColor = sp.outer.color
     ctx.shadowBlur = sp.outer.blur
     ctx.shadowOffsetX = sp.outer.offX
     ctx.shadowOffsetY = sp.outer.offY
-    warpPerspective(ctx, signCanvas, signCanvas.width, signCanvas.height, points)
+    ctx.drawImage(signCanvas, 0, 0, overlay.width, overlay.height)
     ctx.shadowColor = sp.inner.color
     ctx.shadowBlur = sp.inner.blur
     ctx.shadowOffsetX = sp.inner.offX
     ctx.shadowOffsetY = sp.inner.offY
-    warpPerspective(ctx, signCanvas, signCanvas.width, signCanvas.height, points)
+    ctx.drawImage(signCanvas, 0, 0, overlay.width, overlay.height)
     ctx.restore()
 
-    // 辅助网格：在标识自身坐标系内生成，并随标识一起透视 warp，
+    // 辅助网格：在标识自身坐标系（512×512）内生成，并随标识一起透视 warp 到四点框，
     // 使网格与标识内容完全对齐，用于判断标识在四点框内是否端正、居中。
     // 网格只画在屏幕 overlay 层，不进入导出成品图。
     if (showGrid) {
       if (
         !signGridRef.current ||
-        signGridRef.current.width !== signCanvas.width ||
-        signGridRef.current.height !== signCanvas.height
+        signGridRef.current.width !== 512 ||
+        signGridRef.current.height !== 512
       ) {
-        signGridRef.current = buildSignGrid(signCanvas.width, signCanvas.height)
+        signGridRef.current = buildSignGrid(512, 512)
       }
       warpPerspective(
         ctx,
