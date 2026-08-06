@@ -229,6 +229,74 @@ export function recoverCameraPose(
   return { fx: f, fy: f, cx, cy, R, t: [nt[0], nt[1], nt[2]] }
 }
 
+/**
+ * 厚度方向透视收缩强度。
+ * 后脸(z=-depthZ)在裁剪空间的 w 上额外增加 k，使其按 1/(1+k) 缩小（朝相机灭点收缩）；
+ * k 为常数、与 depthZ 解耦，使不同厚度下观感一致。0 表示厚度纯平行（无透视），
+ * 越大立体边越明显。取值接近真实针孔相机在典型安装距离下的收缩量（约 5%~12%）。
+ */
+const SIGN_FORESHORTEN = 0.1
+
+/**
+ * 直接由单应构造「投影相机矩阵」(4×4, 行主序)，使标识前脸(z=0)精确落入照片四边形，
+ * 并给厚度方向(z≠0)保留真实透视缩小（朝相机灭点收缩）。
+ *
+ * 为什么不用 recoverCameraPose 的 K·[R|t] 分解：
+ * 单图位姿恢复的本征病态（近正面 / 竖直边时焦距 f→∞ 退化）使 R 无法同时正交且精确
+ * 复现单应；Three.js 的 setFromRotationMatrix 会强制正交化，扭曲投影，前脸偏离四点框。
+ * 这里绕过 K·[R|t]，直接把单应 H 嵌入 4×4 投影矩阵——前脸映射由 H 精确保证
+ * （当且仅当 z=0），厚度项只控制 z 方向透视强弱，不影响前脸贴合。
+ *
+ * @param modelRect 标识前脸矩形四角 [左上,右上,右下,左下]（模型坐标，z=0）
+ * @param quad       照片中四边形四角（同序，单位须与 W/Hh 一致）
+ * @param W   渲染画布宽（与 quad 同单位）
+ * @param Hh  渲染画布高
+ * @param depthZ 标识沿 z 的厚度（世界单位，>0），用于深度缓冲归一化与透视收缩量
+ * @returns 行主序 4×4 投影矩阵（可直接传给 THREE.Matrix4.set），退化时返回 null
+ */
+export function buildSignProjectionMatrix(
+  modelRect: [Point, Point, Point, Point],
+  quad: [Point, Point, Point, Point],
+  W: number,
+  Hh: number,
+  depthZ: number,
+): number[] | null {
+  const H = solveHomography(modelRect, quad)
+  if (!H) return null
+
+  // 像素 → NDC 仿射：NDC.x = 2u/W - 1, NDC.y = 1 - 2v/Hh（WebGL Y 轴向上）
+  const t00 = 2 / W
+  const t02 = -1
+  const t11 = -2 / Hh
+  const t12 = 1
+  // H_ndc = T · H（行主序 3×3）：把「模型正面矩形→照片像素」的单应转为
+  // 「模型正面矩形→NDC」的单应。第三行 (=H 第三行) 即透视除法的 w 项，
+  // z=0 时 w3 = H[6]·x + H[7]·y + 1。
+  const Hn: Matrix3 = [
+    t00 * H[0] + t02 * H[6], t00 * H[1] + t02 * H[7], t00 * H[2] + t02 * H[8],
+    t11 * H[3] + t12 * H[6], t11 * H[4] + t12 * H[7], t11 * H[5] + t12 * H[8],
+    H[6], H[7], H[8],
+  ]
+
+  // 厚度透视收缩：后脸(z=-depthZ)的裁剪 w 增加 k → 屏幕上按 1/(1+k) 缩小。
+  const k = SIGN_FORESHORTEN
+  const m32 = -k / Math.max(depthZ, 1e-3)
+
+  // 深度缓冲：把 z∈[-depthZ,0] 线性映射到裁剪 z∈[0, ~0.99]，避免厚标被近/远裁剪掉。
+  const invDepth = 0.99 / Math.max(depthZ, 1e-3)
+
+  // 4×4 投影矩阵（行主序），WebGL 约定下：clip = M · (x,y,z,1)，NDC = clip.xyz / clip.w
+  //  row0/1 = H_ndc 前两行（z=0 时前脸精确落在四边形）
+  //  row2   = (0,0,-invDepth,0) 深度：前脸 z=0 → 0，后脸 z<0 → ~0.99（更靠后）
+  //  row3   = H_ndc 第三行 + m32·z（透视除法 w：后脸 w 增大 → 缩小）
+  return [
+    Hn[0], Hn[1], 0, Hn[2],
+    Hn[3], Hn[4], 0, Hn[5],
+    0, 0, -invDepth, 0,
+    Hn[6], Hn[7], m32, Hn[8],
+  ]
+}
+
 // ---- 3×3 矩阵 / 向量小工具（行主序） ----
 function mul3(A: Matrix3, B: Matrix3): Matrix3 {
   const C: number[] = new Array(9).fill(0)

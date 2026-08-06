@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { svgToGroup, normalizeGroup } from './svgToMesh'
 import { PRESETS, type SignPreset, type SvgBBox, detectSvgLayers } from './svgMeta'
-import { recoverCameraPose, type CameraPose, type Point } from './perspectiveWarp'
+import { buildSignProjectionMatrix, type Point } from './perspectiveWarp'
 
 /**
  * Three.js 离屏渲染：将标识渲染为带 3D 厚度 + 光照 + 材质质感的透明背景 Canvas
@@ -60,7 +60,7 @@ interface CoreRenderInput {
   enableShadow?: boolean
 }
 
-// applyWallTilt 已移除：厚度方向现在由 recoverCameraPose 反解的相机位姿 +
+// applyWallTilt 已移除：厚度方向现在由单应直接嵌入的 4×4 投影矩阵 +
 // 真实透视投影决定，不再用 2D 错切近似（见 renderGroupToCanvas 的透视分支）。
 
 /**
@@ -226,15 +226,14 @@ async function renderPerspective(
   const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false, camera } = input
   const cam = camera!
 
-  // 关键：把“贴墙那一面”（z 最小面 = 挤出几何体的背面/安装面）对齐到墙面 z=0。
-  // 标识正面（贴图面，z 最大面）随之位于 +Z 方向；而经单应反解，世界 +Z 正是
-  // 朝相机的方向（见 camera-space 验证：body(+Z) 的相机 z 更小=更近），于是标识
-  // 自然从墙面“往外突出”，而非陷入墙内。厚度边在真实透视投影下呈现长方体立体感，
-  // 方向完全由几何动态决定（随四边形形状 / 远近 / 视角自然变化），无任何写死。
-  // 同时：图片标识的完整贴图在 zMax cap 上，此平移后它恰好成为朝相机的最近面（可见面），
-  // 背面（默认 UV）落在墙面上被遮挡——贴图朝向正确。
-  const backZ = preBox.min.z
-  group.position.z += -backZ
+  // 关键：把“标识正面”（贴图面，z 最大面）对齐到单应约束平面 z=0。
+  // buildSignProjectionMatrix 由正面矩形↔照片四边形直接构造投影矩阵，因此正面
+  // 必须位于 z=0 才能精确贴合用户标记的四个点；若把背面对齐到 z=0，正面会沿法线
+  // 方向再往外凸出一段厚度距离，导致标识在照片中偏离四点框。
+  // 平移后背面位于 z=-depthZ（墙内方向），正面位于 z=0 精确贴合四点；从侧面仍
+  // 能看到厚度边，立体感由真实透视投影动态决定。
+  const frontZ = preBox.max.z
+  group.position.z += -frontZ
 
   // 模型矩形（前脸包围盒，与 normalizeGroup 后一致）：最大边=2、居中、z=0。
   const hw = Math.max((preBox.max.x - preBox.min.x) / 2, 1e-4)
@@ -257,17 +256,13 @@ async function renderPerspective(
     y: p.y * scale,
   })) as [Point, Point, Point, Point]
 
-  const pose: CameraPose | null = recoverCameraPose(modelRect, q, W, Hh)
-  if (!pose) {
+  const depthZ = Math.max(0.001, frontZ - preBox.min.z)
+  const proj = buildSignProjectionMatrix(modelRect, q, W, Hh, depthZ)
+  if (!proj) {
     // 退化：恢复前脸位置并回退正交渲染，避免整段渲染失败。
-    group.position.z += backZ
+    group.position.z += frontZ
     return renderGroupToCanvas({ ...input, camera: undefined })
   }
-
-  const R = pose.R
-  const t = pose.t
-  // 相机距离（用于 near/far 取值）
-  const dist = Math.hypot(t[0], t[1], t[2]) || 5
 
   const scene = new THREE.Scene()
   scene.add(group)
@@ -336,32 +331,27 @@ async function renderPerspective(
     }
   })
 
-  // ---- 透视相机：用 Three.js 内置 PerspectiveCamera 恢复相机位姿 ----
-  // 单应分解给出 OpenCV 约定下的 world→camera：[R|t]，p_cam = R·p_world + t，相机看向 +Z。
-  // WebGL/Three.js 相机看向 -Z 且 Y 轴与图像 Y 反向，因此视图矩阵需经 diag(1,-1,-1)
-  // 转换：V = diag(1,-1,-1)·[R|t]。对应的相机世界姿态为：
-  //   worldRot = V^T = R^T · diag(1,-1,-1)
-  //   C        = -R^T · t
-  // 这样相机看向墙面（沿 r3），墙面位于相机前方（本地 -Z，即 WebGL 可见区域），
-  // 标识正面（+Z）朝相机突出，方向完全由几何动态决定。
+  // ---- 投影相机：直接由单应构造 4×4 投影矩阵 ----
+  // 绕过 K·[R|t] 分解（单图位姿恢复近正面时焦距退化、R 无法正交，会扭曲前脸），
+  // 把单应 H 嵌入投影矩阵：z=0 前脸由 H 精确映射到照片四边形（必落在四点内），
+  // 仅厚度方向(z≠0)保留真实透视缩小。视图矩阵取单位阵（前脸已对齐到世界 z=0）。
   const camera3d = new THREE.PerspectiveCamera()
-  const worldRot = new THREE.Matrix4().set(
-    R[0], -R[3], -R[6], 0,
-    R[1], -R[4], -R[7], 0,
-    R[2], -R[5], -R[8], 0,
-    0, 0, 0, 1,
+  camera3d.projectionMatrix.set(
+    proj[0], proj[1], proj[2], proj[3],
+    proj[4], proj[5], proj[6], proj[7],
+    proj[8], proj[9], proj[10], proj[11],
+    proj[12], proj[13], proj[14], proj[15],
   )
-  const Rt = new THREE.Matrix3().set(R[0], R[3], R[6], R[1], R[4], R[7], R[2], R[5], R[8])
-  const center = new THREE.Vector3(t[0], t[1], t[2]).applyMatrix3(Rt).negate()
-  camera3d.position.copy(center)
-  camera3d.quaternion.setFromRotationMatrix(worldRot)
-  // 焦距 f = max(W,H) 对应垂直 FOV：tan(fov/2) = Hh/(2f)
-  camera3d.fov = (2 * Math.atan(Hh / (2 * pose.fx)) * 180) / Math.PI
-  camera3d.aspect = W / Hh
-  camera3d.near = Math.max(0.001, dist * 0.05)
-  camera3d.far = dist * 20 + 10
-  camera3d.updateProjectionMatrix()
-  camera3d.updateMatrixWorld()
+  camera3d.projectionMatrixInverse.copy(camera3d.projectionMatrix).invert()
+  camera3d.matrixWorld.identity()
+  camera3d.matrixWorldInverse.identity()
+  camera3d.matrixAutoUpdate = false
+  camera3d.matrixWorldAutoUpdate = false
+
+  // 自定义投影矩阵下，基于标准视锥的剔除会把标识误杀，关闭逐网格剔除。
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh) child.frustumCulled = false
+  })
 
   renderer.render(scene, camera3d)
 
@@ -470,6 +460,13 @@ export async function renderSignToCanvas(
       face.roughness = presetDef.roughness
       side.metalness = presetDef.metalness * 0.7
       side.roughness = Math.min(1, presetDef.roughness + 0.15)
+
+      // SVG 坐标系 Y 轴向下，svgToMesh 用 group.scale.y=-1 翻转到 Three.js Y 轴向上。
+      // 该反射会反转面片朝向，可能导致 front-face 对齐后实际可见的是底 cap（z=-depth），
+      // 其投影比 quad 小，造成标识位置偏移。用 DoubleSide 让顶 cap（z=0）也可见，
+      // 从而正面贴图精确贴合四个标记点；侧面同样 DoubleSide 保证厚度边可见。
+      face.side = THREE.DoubleSide
+      side.side = THREE.DoubleSide
 
       if (overrideColor) {
         face.map = null
@@ -612,6 +609,9 @@ async function renderLayeredToCanvas(
       face.roughness = presetDef.roughness
       side.metalness = presetDef.metalness * 0.7
       side.roughness = Math.min(1, presetDef.roughness + 0.15)
+
+      face.side = THREE.DoubleSide
+      side.side = THREE.DoubleSide
 
       if (overrideColor) {
         face.map = null
