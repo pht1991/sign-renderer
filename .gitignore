@@ -1,5 +1,6 @@
 node_modules/
 dist/
+tmp/
 *.local
 .DS_Store
 .workbuddy/

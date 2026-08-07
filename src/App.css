@@ -455,6 +455,54 @@ body {
   color: #fff;
 }
 
+/* === 层级管理（立体分层） === */
+.layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 8px;
+  background: #15181f;
+  border: 1px solid #2a2e38;
+  border-radius: 8px;
+}
+
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.layer-row .layer-visible {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  accent-color: #3b82f6;
+  cursor: pointer;
+}
+
+.layer-row .layer-name {
+  font-size: 12px;
+  color: #9ca3af;
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 84px;
+}
+
+.layer-row input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: #3b82f6;
+}
+
+.layer-row .param-value {
+  font-size: 12px;
+  width: 22px;
+  text-align: right;
+}
+
 /* === 移动端响应式 === */
 @media (max-width: 860px) {
   .main-layout {

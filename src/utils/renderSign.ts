@@ -39,6 +39,10 @@ export interface RenderOptions {
   layered?: boolean
   /** 层间距：相邻图层在 Z 方向的间隙（单位与 depth 一致），越大浮雕越明显 */
   layerGap?: number
+  /** 每层各自的厚度（与 layers 顺序一致）；仅在 layered 时生效，替代全局 depth */
+  layerDepths?: number[]
+  /** 每层是否可见（与 layers 顺序一致）；隐藏的层不参与立体堆叠 */
+  layerVisible?: boolean[]
 }
 
 /** 渲染核心所需的公共参数 */
@@ -442,6 +446,8 @@ export async function renderSignToCanvas(
     camera,
     layered = false,
     layerGap = 10,
+    layerDepths,
+    layerVisible,
   } = opts
 
   const overrideColor = color && color !== '#dddddd' ? new THREE.Color(color) : null
@@ -449,8 +455,8 @@ export async function renderSignToCanvas(
   // 立体分层：检测 SVG 顶层图层，逐层拉伸 + Z 轴堆叠成浮雕。
   // 若有效几何图层不足两层（如某层全是 <text> 等无法拉伸的元素），返回 null 回退单层。
   const layers = layered ? detectSvgLayers(svgString) : null
-  if (layers && layers.length > 1) {
-    const layeredCanvas = await renderLayeredToCanvas(layers, depth, renderSize, {
+  if (layers && layers.length > 1 && layerDepths && layerDepths.length === layers.length) {
+    const layeredCanvas = await renderLayeredToCanvas(layers, layerDepths, renderSize, {
       preset,
       ambientColor,
       lightAzimuth,
@@ -459,6 +465,7 @@ export async function renderSignToCanvas(
       layerGap,
       overrideColor,
       stretch,
+      layerVisible,
     })
     if (layeredCanvas) return layeredCanvas
   }
@@ -542,6 +549,20 @@ export async function renderSignToCanvas(
 }
 
 /**
+ * 释放一个 Object3D 子树里的全部几何与材质（含数组材质），避免显存泄漏。
+ * 用于立体分层中跳过零几何 / 隐藏图层时清理其已构建的几何。
+ */
+function disposeObject(obj: THREE.Object3D): void {
+  obj.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      child.geometry?.dispose()
+      const mats = Array.isArray(child.material) ? child.material : [child.material]
+      mats.forEach((m) => m?.dispose())
+    }
+  })
+}
+
+/**
  * 立体分层渲染：把每一层 SVG 单独拉伸为 3D 几何体，沿 Z 轴按 (depth + layerGap) 堆叠，
  * 形成「多层浮雕」立体标识（类似亚克力分层字 / 底板 + 发光面 + 装饰层）。
  *
@@ -551,7 +572,7 @@ export async function renderSignToCanvas(
  */
 async function renderLayeredToCanvas(
   layers: { id: string; label: string; svg: string }[],
-  depth: number,
+  layerDepths: number[],
   renderSize: number,
   opts: {
     preset: SignPreset
@@ -562,34 +583,51 @@ async function renderLayeredToCanvas(
     layerGap: number
     overrideColor: THREE.Color | null
     stretch?: boolean
+    /** 每层是否可见（与 layers 顺序一致）；隐藏层不堆叠、不渲染 */
+    layerVisible?: boolean[]
   },
 ): Promise<HTMLCanvasElement | null> {
-  const { preset, ambientColor, lightAzimuth, lightIntensity, camera, layerGap, overrideColor, stretch = false } = opts
+  const { preset, ambientColor, lightAzimuth, lightIntensity, camera, layerGap, overrideColor, stretch = false, layerVisible } = opts
 
   // 逐层解析几何，过滤掉零几何图层（如 <text>、空 <g> 等 SVGLoader 无法拉伸的内容）
-  const built = layers.map((ly) => ({ sub: svgToGroup(ly.svg, depth, true), svg: ly.svg }))
-  const layerGroups = built.filter((b) => b.sub.children.length > 0)
-
-  // 有效图层不足两层：分层无意义，清理已建几何并回退单层渲染
-  if (layerGroups.length < 2) {
-    built.forEach((b) =>
-      b.sub.traverse((obj) => {
-        if (obj instanceof THREE.Mesh) {
-          obj.geometry?.dispose()
-          const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
-          mats.forEach((m) => m?.dispose())
-        }
-      }),
-    )
-    return null
-  }
+  // 与隐藏图层（不参与堆叠）。每层按各自厚度 layerDepths[i] 拉伸，沿 +Z 堆叠：
+  // 底层(i=0)贴墙基座(z=0)，上层逐层外凸，层间留 layerGap 间隙。
+  const built = layers.map((ly, i) => ({
+    sub: svgToGroup(ly.svg, layerDepths[i] ?? 0, true),
+    svg: ly.svg,
+    i,
+  }))
 
   const parent = new THREE.Group()
-  layerGroups.forEach((b, i) => {
-    // 分层模式固定带倒角，浮雕侧面更真实；每层沿 +Z 堆叠
-    b.sub.position.z = i * (depth + layerGap)
+  let z = 0
+  for (const b of built) {
+    if (b.sub.children.length === 0) {
+      // 零几何图层（<text> 等）：直接释放避免泄漏
+      disposeObject(b.sub)
+      continue
+    }
+    if (layerVisible && layerVisible[b.i] === false) {
+      // 隐藏图层：不堆叠、释放几何
+      disposeObject(b.sub)
+      continue
+    }
+    // 分层模式固定带倒角，浮雕侧面更真实；每层沿 +Z 堆叠（底层贴墙基座）
+    b.sub.position.z = z
     parent.add(b.sub)
-  })
+    z += (layerDepths[b.i] ?? 0) + layerGap
+  }
+
+  // 有效图层不足两层：分层无意义，清理并回退单层渲染
+  if (parent.children.length < 2) {
+    parent.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        obj.geometry?.dispose()
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
+        mats.forEach((m) => m?.dispose())
+      }
+    })
+    return null
+  }
 
   // 整体归一化：把整座浮雕缩放居中到原点（仅按 xy 平面尺寸，z 厚度不并入视锥）
   normalizeGroup(parent, 2)
@@ -612,13 +650,15 @@ async function renderLayeredToCanvas(
   // 逐层光栅化贴图（仅在不使用统一颜色时），挂到各子组的 userData.layerTex
   const extraDispose: THREE.Texture[] = []
   if (!overrideColor) {
-    for (const lg of layerGroups) {
-      const bbox = lg.sub.userData.svgBBox as SvgBBox | undefined
+    for (const b of built) {
+      if (b.sub.children.length === 0) continue
+      if (layerVisible && layerVisible[b.i] === false) continue
+      const bbox = b.sub.userData.svgBBox as SvgBBox | undefined
       if (!bbox) continue
-      const raster = await rasterizeSvg(lg.svg, bbox, renderSize)
+      const raster = await rasterizeSvg(b.svg, bbox, renderSize)
       if (raster) {
         const tex = makeTexture(raster)
-        ;(lg.sub.userData as Record<string, unknown>).layerTex = tex
+        ;(b.sub.userData as Record<string, unknown>).layerTex = tex
         extraDispose.push(tex)
       }
     }

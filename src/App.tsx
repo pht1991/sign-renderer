@@ -60,6 +60,9 @@ function validateSvg(svgString: string): string | null {
 const MIN_ZOOM = 0.1
 const MAX_ZOOM = 8
 
+// 多层 SVG 开启「立体分层」时，每层预置厚度（首次开启即从平面变为可见浮雕，避免 z 冲突）
+const DEFAULT_LAYER_DEPTH = 15
+
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v))
 }
@@ -264,7 +267,11 @@ export default function App() {
   const [signImageSrc, setSignImageSrc] = useState<string>('')
   const [signWarn, setSignWarn] = useState<string>('')
   const [imageAspect, setImageAspect] = useState<number | null>(null)
-  const [depth, setDepth] = useState<number>(30)
+  // 厚度默认 0：上传标识后以平面（无立体厚度）展示，立体效果由用户自行调整
+  const [depth, setDepth] = useState<number>(0)
+  // 立体分层：每层各自的厚度与可见性（仅多层 SVG 启用「立体分层」时生效）
+  const [layerDepths, setLayerDepths] = useState<number[]>([])
+  const [layerVisible, setLayerVisible] = useState<boolean[]>([])
   const [color, setColor] = useState<string>('#dddddd')
   const [stretch, setStretch] = useState(false)
   const [lockRatio, setLockRatio] = useState(false)
@@ -337,15 +344,20 @@ export default function App() {
   const svgAspect = useMemo(() => getSvgAspectRatio(svgString), [svgString])
   const signAspect = svgAspect ?? imageAspect
 
-  // 检测 SVG 图层数（顶层 <g> / 可绘制元素），用于立体分层开关
-  const layerCount = useMemo(
-    () => (svgString ? detectSvgLayers(svgString)?.length ?? 0 : 0),
+  // 检测 SVG 图层（顶层 <g> / 可绘制元素），用于立体分层开关与层级管理
+  const layers = useMemo(
+    () => (svgString ? detectSvgLayers(svgString) : null),
     [svgString],
   )
-  // 上传新的多层 SVG 时自动开启分层；单/无图层时关闭
+  const layerCount = layers?.length ?? 0
+  // 上传新标识：默认平面显示——厚度归 0、关闭立体分层，并初始化每层厚度/可见性。
+  // 多层 SVG 预置每层厚度（开启立体分层时即呈现浮雕，避免零厚度层 z 冲突）。
   useEffect(() => {
-    setLayered(layerCount > 1)
-  }, [layerCount])
+    setDepth(0)
+    setLayered(false)
+    setLayerDepths(layerCount >= 2 ? new Array(layerCount).fill(DEFAULT_LAYER_DEPTH) : [])
+    setLayerVisible(layerCount >= 2 ? new Array(layerCount).fill(true) : [])
+  }, [svgString, signImageSrc, layerCount])
 
   // === 光照 / 导出分辨率控制 ===
   const [lightAzimuth, setLightAzimuth] = useState<number>(0)
@@ -371,6 +383,8 @@ export default function App() {
     lightIntensity: number
     layered: boolean
     layerGap: number
+    layerDepths: number[]
+    layerVisible: boolean[]
     foreshorten: number
     viewYaw: number
     viewPitch: number
@@ -379,6 +393,7 @@ export default function App() {
     points: INITIAL_POINTS,
     depth, color, stretch, lockRatio, preset, perspective,
     lightAzimuth: 0, lightIntensity: 1, layered, layerGap,
+    layerDepths, layerVisible,
     foreshorten, viewYaw, viewPitch,
   })
   const pointsRef = useRef<[Point, Point, Point, Point]>(INITIAL_POINTS)
@@ -392,9 +407,10 @@ export default function App() {
       points: pointsRef.current,
       depth, color, stretch, lockRatio, preset, perspective,
       lightAzimuth, lightIntensity, layered, layerGap,
+      layerDepths, layerVisible,
       foreshorten, viewYaw, viewPitch,
     }
-  }, [points, depth, color, stretch, lockRatio, preset, perspective, lightAzimuth, lightIntensity, layered, layerGap, foreshorten, viewYaw, viewPitch])
+  }, [points, depth, color, stretch, lockRatio, preset, perspective, lightAzimuth, lightIntensity, layered, layerGap, layerDepths, layerVisible, foreshorten, viewYaw, viewPitch])
 
   const applyState = useCallback((s: EditState) => {
     setPoints(s.points)
@@ -408,6 +424,8 @@ export default function App() {
     setLightIntensity(s.lightIntensity)
     setLayered(s.layered)
     setLayerGap(s.layerGap)
+    setLayerDepths(s.layerDepths)
+    setLayerVisible(s.layerVisible)
     setForeshorten(s.foreshorten)
     setViewYaw(s.viewYaw)
     setViewPitch(s.viewPitch)
@@ -486,6 +504,8 @@ export default function App() {
           camera,
           layered: layerCount > 1 ? layered : false,
           layerGap,
+          layerDepths: layered ? layerDepths : undefined,
+          layerVisible: layered ? layerVisible : undefined,
         })
       }
       return new Promise<HTMLCanvasElement>((resolve) => {
@@ -534,9 +554,15 @@ export default function App() {
       window.clearTimeout(timer)
       cancelled = true
     }
-  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity, layered, layerGap, aa, layerCount, displaySize.w, displaySize.h, points, foreshorten, viewYaw, viewPitch])
+  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity, layered, layerGap, layerDepths, layerVisible, aa, layerCount, displaySize.w, displaySize.h, points, foreshorten, viewYaw, viewPitch])
 
   // === 2. 实时预览合成 ===
+  // 有效厚度：用于接触阴影强弱。立体分层时取各层厚度之和 + 层间距；否则取全局厚度。
+  const effectiveDepth =
+    layered && layerDepths.length
+      ? layerDepths.reduce((a, b) => a + b, 0) + layerGap * Math.max(0, layerDepths.length - 1)
+      : depth
+
   const drawOverlay = useCallback(() => {
     const overlay = overlayRef.current
     const img = photoRef.current
@@ -549,7 +575,7 @@ export default function App() {
 
     // signCanvas 已是照片坐标系里的透视投影图（带 alpha），直接 1:1 贴到 overlay；
     // 叠加与导出一致的柔和接触阴影（所见即所得：调光角度时预览即可看到阴影方向/软硬变化）
-    const sp = contactShadowPasses(overlay.width, depth, lightAzimuth)
+    const sp = contactShadowPasses(overlay.width, effectiveDepth, lightAzimuth)
     ctx.save()
     ctx.shadowColor = sp.outer.color
     ctx.shadowBlur = sp.outer.blur
@@ -582,7 +608,7 @@ export default function App() {
         points,
       )
     }
-  }, [signCanvas, displaySize, points, showGrid, depth, lightAzimuth])
+  }, [signCanvas, displaySize, points, showGrid, effectiveDepth, lightAzimuth])
 
   // 用 RAF 合并高频重绘：拖拽四点 / 缩放时每帧只重绘一次，避免重复 warp 卡顿
   const updatePreview = useCallback(() => {
@@ -1054,7 +1080,7 @@ export default function App() {
           displaySize.w,
           displaySize.h,
           usedScale,
-          depth,
+          effectiveDepth,
           lightAzimuth,
         )
         const fmtMap = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' } as const
@@ -1267,20 +1293,22 @@ export default function App() {
 
           <section className="panel-section">
             <h2>参数设置</h2>
-            <div className="param-row">
-              <label>厚度</label>
-              <input
-                type="range"
-                min="5"
-                max="80"
-                value={depth}
-                onChange={(e) => setDepth(Number(e.target.value))}
-                onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
-                onPointerUp={() => commit(dragStartRef.current ?? undefined)}
-                onKeyUp={() => commit()}
-              />
-              <span className="param-value">{depth}</span>
-            </div>
+            {layerCount < 2 && (
+              <div className="param-row">
+                <label>厚度</label>
+                <input
+                  type="range"
+                  min="0"
+                  max="80"
+                  value={depth}
+                  onChange={(e) => setDepth(Number(e.target.value))}
+                  onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
+                  onPointerUp={() => commit(dragStartRef.current ?? undefined)}
+                  onKeyUp={() => commit()}
+                />
+                <span className="param-value">{depth}</span>
+              </div>
+            )}
             <div className="param-row">
               <label>{signImageSrc && !svgString ? '边框色' : '颜色'}</label>
               <input
@@ -1314,44 +1342,6 @@ export default function App() {
                 ))}
               </select>
             </div>
-            {layerCount > 1 && (
-              <>
-                <div className="param-row">
-                  <label>立体分层</label>
-                  <input
-                    type="checkbox"
-                    checked={layered}
-                    onChange={(e) => { setLayered(e.target.checked); commit() }}
-                  />
-                  <span className="param-value">{layered ? '开' : '关'}</span>
-                </div>
-                {layered && (
-                  <div className="param-row">
-                    <label>层间距</label>
-                    <input
-                      type="range"
-                      min="0"
-                      max="40"
-                      step="1"
-                      value={layerGap}
-                      onChange={(e) => setLayerGap(Number(e.target.value))}
-                      onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
-                      onPointerUp={() => commit(dragStartRef.current ?? undefined)}
-                      onKeyUp={() => commit()}
-                    />
-                    <span className="param-value">{layerGap}</span>
-                  </div>
-                )}
-                <p className="hint layer-note">
-                  检测到 {layerCount} 个图层，分层后沿厚度方向堆叠成立体浮雕（底板 + 上层图案）
-                </p>
-                {svgString.includes('<text') && (
-                  <p className="hint">
-                    提示：原 SVG 含文字（&lt;text&gt;），分层时该层可能无法拉伸，建议导出前将文字“创建轮廓 / 转曲为路径”
-                  </p>
-                )}
-              </>
-            )}
             <div className="param-row">
               <label>高清边缘</label>
               <input
@@ -1432,6 +1422,95 @@ export default function App() {
               自动匹配光照（基于照片）
             </button>
           </section>
+
+          {layerCount >= 2 && (
+            <section className="panel-section">
+              <h2>层级管理（立体分层）</h2>
+              <p className="hint">检测到 {layerCount} 个图层。开启「立体分层」后，可分别设置每层的厚度组成立体浮雕；默认平面显示，立体效果由你调整。</p>
+              <div className="param-row">
+                <label>立体分层</label>
+                <input
+                  type="checkbox"
+                  checked={layered}
+                  onChange={(e) => {
+                    const next = e.target.checked
+                    // 首次开启且各层厚度仍为 0 时，预置每层厚度，避免零厚度层 z 冲突导致平面闪烁
+                    if (next && layerDepths.every((d) => d === 0)) {
+                      setLayerDepths(new Array(layerCount).fill(DEFAULT_LAYER_DEPTH))
+                    }
+                    setLayered(next)
+                    commit()
+                  }}
+                />
+                <span className="param-value">{layered ? '开' : '关'}</span>
+              </div>
+              {layered && (
+                <>
+                  <div className="layer-list">
+                    {(layers ?? []).map((ly, i) => (
+                      <div className="layer-row" key={ly.id}>
+                        <input
+                          type="checkbox"
+                          className="layer-visible"
+                          checked={layerVisible[i] ?? true}
+                          onChange={(e) => {
+                            setLayerVisible((prev) => {
+                              const n = [...prev]
+                              n[i] = e.target.checked
+                              return n
+                            })
+                            commit()
+                          }}
+                          title="显示该层"
+                        />
+                        <span className="layer-name" title={ly.label}>{ly.label}</span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="80"
+                          step="1"
+                          value={layerDepths[i] ?? 0}
+                          onChange={(e) =>
+                            setLayerDepths((prev) => {
+                              const n = [...prev]
+                              n[i] = Number(e.target.value)
+                              return n
+                            })
+                          }
+                          onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
+                          onPointerUp={() => commit(dragStartRef.current ?? undefined)}
+                          onKeyUp={() => commit()}
+                          disabled={!(layerVisible[i] ?? true)}
+                        />
+                        <span className="param-value">{layerDepths[i] ?? 0}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="param-row">
+                    <label>层间距</label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="40"
+                      step="1"
+                      value={layerGap}
+                      onChange={(e) => setLayerGap(Number(e.target.value))}
+                      onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
+                      onPointerUp={() => commit(dragStartRef.current ?? undefined)}
+                      onKeyUp={() => commit()}
+                    />
+                    <span className="param-value">{layerGap}</span>
+                  </div>
+                  <p className="hint">列表首项为底层（贴合墙面），向上逐层凸出；每层厚度可单独调整，取消勾选的层不参与立体堆叠。</p>
+                </>
+              )}
+              {svgString.includes('<text') && (
+                <p className="hint">
+                  提示：原 SVG 含文字（&lt;text&gt;），该层可能无法拉伸，建议导出前将文字“创建轮廓 / 转曲为路径”
+                </p>
+              )}
+            </section>
+          )}
 
           <section className="panel-section">
             <h2>视角（3D 凸出方向）</h2>
