@@ -246,17 +246,20 @@ async function renderPerspective(
   const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false, camera } = input
   const cam = camera!
 
-  // 关键：把“标识正面”（贴图面，z 最大面）对齐到单应约束平面 z=0。
-  // buildSignProjectionMatrix 由正面矩形↔照片四边形直接构造投影矩阵，因此正面
-  // 必须位于 z=0 才能精确贴合用户标记的四个点；若把背面对齐到 z=0，正面会沿法线
-  // 方向再往外凸出一段厚度距离，导致标识在照片中偏离四点框。
-  // 平移后背面位于 z=-depthZ（墙内方向），正面位于 z=0 精确贴合四点；从侧面仍
-  // 能看到厚度边，立体感由真实透视投影动态决定。
-  const frontZ = preBox.max.z
-  group.position.z += -frontZ // 前脸(z=max.z)对齐到世界 z=0，由单应精确贴合四点
+  // 几何语义翻转：四点(墙基座)= 标识贴合外立面的位置(z=0)，正脸朝相机凸出(z=-depthZ)
+  // 并被透视放大。为把贴图正脸送到凸出端，这里把整体几何沿 z 镜像（仅翻深度、不翻
+  // x/y，贴图方向不变），使原 max.z 的正脸落到 z=-depthZ，原 min.z 的墙基座落到 z=0。
+  group.scale.z *= -1
+  group.updateMatrixWorld(true)
+  const bbox = new THREE.Box3().setFromObject(group)
 
-  // 视角倾角：以剪切矩阵旋转“凸出的深度轴”。前脸(z=0)不受剪切影响、仍钉在四点；
-  // 后脸(z=-depth)随 tiltYaw/tiltPitch 在屏幕偏移，模拟标识从某角度被观察。
+  // 把墙基座(max.z，镜像后=原 min.z)对齐到世界 z=0，由单应精确贴合四点(外立面位置)；
+  // 正脸(min.z，镜像后=原 max.z)落在 z=-depthZ，经投影透视放大、朝相机凸出。
+  const wallZ = bbox.max.z
+  group.position.z += -wallZ // 墙基座(z=max.z after mirror)对齐 z=0 = 四点
+
+  // 视角倾角：以剪切矩阵旋转“凸出的深度轴”。墙基座(z=0)不受剪切影响、仍钉在四点；
+  // 正脸(z=-depthZ)随 tiltYaw/tiltPitch 在屏幕偏移，模拟标识从某角度被观察。
   // a=tan(yaw) 控制左右、b=tan(pitch) 控制上下；小角度保证观感自然。
   const yaw = ((cam.tiltYaw ?? 0) * Math.PI) / 180
   const pitch = ((cam.tiltPitch ?? 0) * Math.PI) / 180
@@ -269,9 +272,9 @@ async function renderPerspective(
   group.matrixWorldAutoUpdate = false
   group.matrixWorld.copy(group.matrix)
 
-  // 模型矩形（前脸包围盒，与 normalizeGroup 后一致）：最大边=2、居中、z=0。
-  const hw = Math.max((preBox.max.x - preBox.min.x) / 2, 1e-4)
-  const hh = Math.max((preBox.max.y - preBox.min.y) / 2, 1e-4)
+  // 模型矩形（标识包围盒，与 normalizeGroup 后一致）：最大边=2、居中、z=0 为墙基座。
+  const hw = Math.max((bbox.max.x - bbox.min.x) / 2, 1e-4)
+  const hh = Math.max((bbox.max.y - bbox.min.y) / 2, 1e-4)
   const modelRect: [Point, Point, Point, Point] = [
     { x: -hw, y: hh },
     { x: hw, y: hh },
@@ -290,11 +293,12 @@ async function renderPerspective(
     y: p.y * scale,
   })) as [Point, Point, Point, Point]
 
-  const depthZ = Math.max(0.001, frontZ - preBox.min.z)
+  const depthZ = Math.max(0.001, bbox.max.z - bbox.min.z)
   const proj = buildSignProjectionMatrix(modelRect, q, W, Hh, depthZ, cam.foreshorten ?? SIGN_FORESHORTEN)
   if (!proj) {
-    // 退化：恢复前脸位置并回退正交渲染，避免整段渲染失败。
-    group.position.z += frontZ
+    // 退化：恢复几何并回退正交渲染，避免整段渲染失败。
+    group.position.z += wallZ
+    group.scale.z *= -1
     return renderGroupToCanvas({ ...input, camera: undefined })
   }
 

@@ -230,30 +230,34 @@ export function recoverCameraPose(
 }
 
 /**
- * 厚度方向透视收缩强度。
- * 后脸(z=-depthZ)在裁剪空间的 w 上额外增加 k，使其按 1/(1+k) 缩小（朝相机灭点收缩）；
- * k 为常数、与 depthZ 解耦，使不同厚度下观感一致。0 表示厚度纯平行（无透视），
- * 越大立体边越明显。取值接近真实针孔相机在典型安装距离下的收缩量（约 5%~12%）。
+ * 厚度方向透视强度（等效相机远近 / 凸出放大）。
+ * 标识正脸(z=-depthZ，朝观察者凸出)在裁剪空间的 w 上减少 k，使其按 1/(1-k) 放大
+ * （朝相机灭点凸出、比例放大）；四点所在的墙基座(z=0)保持原尺寸精确贴合外立面。
+ * k 与 depthZ 解耦，使不同厚度下观感一致。0=平行厚度（无凸出放大），越大立体越明显。
  */
 export const SIGN_FORESHORTEN = 0.1
 
 /**
- * 直接由单应构造「投影相机矩阵」(4×4, 行主序)，使标识前脸(z=0)精确落入照片四边形，
- * 并给厚度方向(z≠0)保留真实透视缩小（朝相机灭点收缩）。
+ * 直接由单应构造「投影相机矩阵」(4×4, 行主序)，使标识墙基座(z=0)精确落入照片四边形
+ * （四点=贴合外立面的位置），正脸(z=-depthZ)朝相机凸出并被透视放大，呈现“从墙面
+ * 往外突出、随比例放大”的立体效果。
+ *
+ * 几何语义：四点(z=0)是标识在外立面上的基座/安装面，保持原尺寸精确贴合；正脸位于
+ * z=-depthZ，比基座更靠近观察者，被透视放大（等效相机更近），故视觉上“外推且放大”。
  *
  * 为什么不用 recoverCameraPose 的 K·[R|t] 分解：
  * 单图位姿恢复的本征病态（近正面 / 竖直边时焦距 f→∞ 退化）使 R 无法同时正交且精确
- * 复现单应；Three.js 的 setFromRotationMatrix 会强制正交化，扭曲投影，前脸偏离四点框。
- * 这里绕过 K·[R|t]，直接把单应 H 嵌入 4×4 投影矩阵——前脸映射由 H 精确保证
- * （当且仅当 z=0），厚度项只控制 z 方向透视强弱，不影响前脸贴合。
+ * 复现单应；Three.js 的 setFromRotationMatrix 会强制正交化，扭曲投影，基座偏离四点框。
+ * 这里绕过 K·[R|t]，直接把单应 H 嵌入 4×4 投影矩阵——墙基座映射由 H 精确保证
+ * （当且仅当 z=0），厚度项只控制 z 方向透视强弱，不影响墙基座贴合。
  *
- * @param modelRect 标识前脸矩形四角 [左上,右上,右下,左下]（模型坐标，z=0）
- * @param quad       照片中四边形四角（同序，单位须与 W/Hh 一致）
+ * @param modelRect 标识矩形四角 [左上,右上,右下,左下]（模型坐标；z=0 为墙基座，z=-depthZ 为正脸）
+ * @param quad       照片中四边形四角(=墙基座贴合位置，同序，单位须与 W/Hh 一致)
  * @param W   渲染画布宽（与 quad 同单位）
  * @param Hh  渲染画布高
- * @param depthZ 标识沿 z 的厚度（世界单位，>0），用于深度缓冲归一化与透视收缩量
- * @param foreshorten 厚度方向透视收缩强度（等效相机远近）：0=无透视(平行厚度)，
- *   越大立体边越明显；默认取 SIGN_FORESHORTEN。由 App 的「视角·透视强度」滑块控制。
+ * @param depthZ 标识沿 z 的厚度（世界单位，>0）：正脸在 z=-depthZ，墙基座在 z=0
+ * @param foreshorten 厚度方向透视强度（等效相机远近 / 凸出放大）：0=无透视(平行厚度)，
+ *   越大正脸凸出放大越明显；默认取 SIGN_FORESHORTEN。由 App 的「视角·透视强度」滑块控制。
  * @returns 行主序 4×4 投影矩阵（可直接传给 THREE.Matrix4.set），退化时返回 null
  */
 export function buildSignProjectionMatrix(
@@ -281,21 +285,23 @@ export function buildSignProjectionMatrix(
     H[6], H[7], H[8],
   ]
 
-  // 厚度透视收缩：后脸(z=-depthZ)的裁剪 w 增加 k → 屏幕上按 1/(1+k) 缩小。
+  // 厚度凸出放大：正脸(z=-depthZ)的裁剪 w 减少 k → 屏幕上按 1/(1-k) 放大（凸出墙外）。
+  // 墙基座(z=0)的 w 不变，仍精确贴合四点；z 越往正脸方向，w 越小、画面越大。
   const k = foreshorten
-  const m32 = -k / Math.max(depthZ, 1e-3)
+  const m32 = k / Math.max(depthZ, 1e-3)
 
-  // 深度缓冲：把 z∈[-depthZ,0] 线性映射到裁剪 z∈[0, ~0.99]，避免厚标被近/远裁剪掉。
-  const invDepth = 0.99 / Math.max(depthZ, 1e-3)
+  // 深度缓冲：把 z∈[0,-depthZ] 线性映射到裁剪 z∈[0, ~-0.5·(1-k)]，正脸(z=-depthZ)更靠
+  // 近相机（NDC.z 更负），墙基座(z=0)在 0；系数随 (1-k) 收敛，保证任意 k 不被裁剪。
+  const invDepth = 0.5 * (1 - Math.min(k, 0.9)) / Math.max(depthZ, 1e-3)
 
   // 4×4 投影矩阵（行主序），WebGL 约定下：clip = M · (x,y,z,1)，NDC = clip.xyz / clip.w
-  //  row0/1 = H_ndc 前两行（z=0 时前脸精确落在四边形）
-  //  row2   = (0,0,-invDepth,0) 深度：前脸 z=0 → 0，后脸 z<0 → ~0.99（更靠后）
-  //  row3   = H_ndc 第三行 + m32·z（透视除法 w：后脸 w 增大 → 缩小）
+  //  row0/1 = H_ndc 前两行（z=0 时墙基座精确落在四边形=四点）
+  //  row2   = (0,0,+invDepth,0) 深度：墙基座 z=0 → 0，正脸 z=-depthZ → 更负（更近）
+  //  row3   = H_ndc 第三行 + m32·z（透视除法 w：正脸 w 减小 → 放大凸出）
   return [
     Hn[0], Hn[1], 0, Hn[2],
     Hn[3], Hn[4], 0, Hn[5],
-    0, 0, -invDepth, 0,
+    0, 0, invDepth, 0,
     Hn[6], Hn[7], m32, Hn[8],
   ]
 }
