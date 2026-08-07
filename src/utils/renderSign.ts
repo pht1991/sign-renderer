@@ -166,8 +166,19 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   if (env) scene.environment = env
 
   const tint = ambientColor ? new THREE.Color(ambientColor) : new THREE.Color(0xffffff)
-  scene.add(new THREE.AmbientLight(tint.getHex(), enableShadow ? 0.35 : 0.6))
+  // 环境光压低，让侧边明暗对比更明显。
+  scene.add(new THREE.AmbientLight(tint.getHex(), enableShadow ? 0.3 : 0.35))
 
+  // 恒定正面光（+Z，朝相机）：保证标识正脸(贴图面)始终被照亮、不随方位角变暗；
+  // 其方向沿 ±Z，对侧边(法线在 XY 平面)几乎无贡献，故不削弱侧边明暗区分。
+  const frontLight = new THREE.DirectionalLight(0xffffff, 0.9)
+  frontLight.position.set(0, 0, 6)
+  frontLight.target.position.set(0, 0, 0)
+  scene.add(frontLight)
+  scene.add(frontLight.target)
+
+  // 主光：由照片分析出的方位角控制，是侧边明暗差异的主来源。
+  // 侧边法线在 ±X/±Y 平面，不同方位角下受光程度不同 → 清晰的光暗区分。
   const lightAz = ((input.lightAzimuth ?? 0) * Math.PI) / 180
   const lightEl = (30 * Math.PI) / 180
   const lightR = 6
@@ -194,12 +205,13 @@ async function renderGroupToCanvas(input: CoreRenderInput): Promise<HTMLCanvasEl
   }
   scene.add(keyLight)
 
-  const fillLight = new THREE.DirectionalLight(0xaabbff, enableShadow ? 0.25 : 0.6)
-  fillLight.position.set(-3, -1, 2)
+  // 柔和补光：仅给暗面一点底色避免纯黑；强度远低于主光，不削弱对比。
+  const fillLight = new THREE.DirectionalLight(0xaabbff, enableShadow ? 0.18 : 0.2)
+  fillLight.position.set(-3, -1.5, 1.5)
   scene.add(fillLight)
 
-  const rimLight = new THREE.DirectionalLight(0xffeecc, enableShadow ? 0.25 : 0.5)
-  rimLight.position.set(0, 2, -3)
+  const rimLight = new THREE.DirectionalLight(0xffeecc, enableShadow ? 0.18 : 0.2)
+  rimLight.position.set(0, 1.5, -3)
   scene.add(rimLight)
 
   group.traverse((child) => {
@@ -824,8 +836,8 @@ export async function renderImageToCanvas(
 
   const group = new THREE.Group()
   const face = new THREE.MeshStandardMaterial()
-  // 侧面使用 BasicMaterial：不受光照角度压暗，避免正面边缘出现突兀深色阴影块。
-  const side = new THREE.MeshBasicMaterial({ color: sideColor })
+  // 侧面改为受光材质：随方位角形成明暗区分（之前用 Basic 平涂无色差）。
+  const side = new THREE.MeshStandardMaterial({ color: sideColor })
   // ExtrudeGeometry 材质索引：0=cap，1=侧面（与 svgToMesh.ts 一致）
   const mesh = new THREE.Mesh(geo, [face, side])
   group.add(mesh)
@@ -847,7 +859,7 @@ export async function renderImageToCanvas(
       const presetDef = PRESETS[preset] ?? PRESETS.matte
       const mats = m.material as THREE.Material[]
       const f = mats[0] as THREE.MeshStandardMaterial // cap 正面
-      const s = mats[1] as THREE.MeshBasicMaterial // 侧面
+      const s = mats[1] as THREE.MeshStandardMaterial // 侧面（受光）
 
       f.map = imgTex
       f.color = new THREE.Color(0xffffff)
@@ -865,7 +877,13 @@ export async function renderImageToCanvas(
       }
 
       f.needsUpdate = true
-      // 侧面已在创建时设为图片边框色，applyMaterial 中无需再改
+
+      // 侧面：受光材质，随方位角明暗变化；颜色为图片边框平均色，自然融入正面画面。
+      s.color = sideColor
+      s.metalness = presetDef.metalness * 0.7
+      s.roughness = Math.min(1, presetDef.roughness + 0.15)
+      s.side = THREE.DoubleSide
+      s.needsUpdate = true
     },
   })
 }
