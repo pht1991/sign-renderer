@@ -350,6 +350,10 @@ export default function App() {
   // === 光照 / 导出分辨率控制 ===
   const [lightAzimuth, setLightAzimuth] = useState<number>(0)
   const [lightIntensity, setLightIntensity] = useState<number>(1)
+  // 视角（3D 凸出方向）：透视强度=等效相机远近；Yaw/Pitch=旋转凸出轴，前脸仍钉在四点
+  const [foreshorten, setForeshorten] = useState<number>(0.1)
+  const [viewYaw, setViewYaw] = useState<number>(0)
+  const [viewPitch, setViewPitch] = useState<number>(0)
   const [exportScale, setExportScale] = useState<number>(1)
   // 导出格式：PNG 无损 / JPG 体积小 / WebP 兼顾（纯静态场景按需选择）
   const [exportFormat, setExportFormat] = useState<'png' | 'jpg' | 'webp'>('png')
@@ -367,11 +371,15 @@ export default function App() {
     lightIntensity: number
     layered: boolean
     layerGap: number
+    foreshorten: number
+    viewYaw: number
+    viewPitch: number
   }
   const editRef = useRef<EditState>({
     points: INITIAL_POINTS,
     depth, color, stretch, lockRatio, preset, perspective,
     lightAzimuth: 0, lightIntensity: 1, layered, layerGap,
+    foreshorten, viewYaw, viewPitch,
   })
   const pointsRef = useRef<[Point, Point, Point, Point]>(INITIAL_POINTS)
   const dragStartRef = useRef<EditState | null>(null)
@@ -384,8 +392,9 @@ export default function App() {
       points: pointsRef.current,
       depth, color, stretch, lockRatio, preset, perspective,
       lightAzimuth, lightIntensity, layered, layerGap,
+      foreshorten, viewYaw, viewPitch,
     }
-  }, [points, depth, color, stretch, lockRatio, preset, perspective, lightAzimuth, lightIntensity, layered, layerGap])
+  }, [points, depth, color, stretch, lockRatio, preset, perspective, lightAzimuth, lightIntensity, layered, layerGap, foreshorten, viewYaw, viewPitch])
 
   const applyState = useCallback((s: EditState) => {
     setPoints(s.points)
@@ -399,6 +408,9 @@ export default function App() {
     setLightIntensity(s.lightIntensity)
     setLayered(s.layered)
     setLayerGap(s.layerGap)
+    setForeshorten(s.foreshorten)
+    setViewYaw(s.viewYaw)
+    setViewPitch(s.viewPitch)
   }, [])
 
   const commit = useCallback((before?: EditState) => {
@@ -454,6 +466,9 @@ export default function App() {
               })) as [Point, Point, Point, Point],
               imgW: natW,
               imgH: natH,
+              foreshorten,
+              tiltYaw: viewYaw,
+              tiltPitch: viewPitch,
             }
           : undefined
 
@@ -519,7 +534,7 @@ export default function App() {
       window.clearTimeout(timer)
       cancelled = true
     }
-  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity, layered, layerGap, aa, layerCount, displaySize.w, displaySize.h, points])
+  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity, layered, layerGap, aa, layerCount, displaySize.w, displaySize.h, points, foreshorten, viewYaw, viewPitch])
 
   // === 2. 实时预览合成 ===
   const drawOverlay = useCallback(() => {
@@ -1416,6 +1431,56 @@ export default function App() {
             <button className="text-btn" onClick={autoMatchLight}>
               自动匹配光照（基于照片）
             </button>
+          </section>
+
+          <section className="panel-section">
+            <h2>视角（3D 凸出方向）</h2>
+            <p className="hint">前脸始终贴合四点；下列控制只调整 3D 凸出部分的透视与观察角度，让立体效果更贴近真实拍摄视角</p>
+            <div className="param-row">
+              <label>透视强度</label>
+              <input
+                type="range"
+                min="0"
+                max="0.4"
+                step="0.01"
+                value={foreshorten}
+                onChange={(e) => setForeshorten(Number(e.target.value))}
+                onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
+                onPointerUp={() => commit(dragStartRef.current ?? undefined)}
+                onKeyUp={() => commit()}
+              />
+              <span className="param-value">{foreshorten.toFixed(2)}</span>
+            </div>
+            <div className="param-row">
+              <label>视角·左右</label>
+              <input
+                type="range"
+                min="-35"
+                max="35"
+                step="1"
+                value={viewYaw}
+                onChange={(e) => setViewYaw(Number(e.target.value))}
+                onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
+                onPointerUp={() => commit(dragStartRef.current ?? undefined)}
+                onKeyUp={() => commit()}
+              />
+              <span className="param-value">{viewYaw}°</span>
+            </div>
+            <div className="param-row">
+              <label>视角·上下</label>
+              <input
+                type="range"
+                min="-35"
+                max="35"
+                step="1"
+                value={viewPitch}
+                onChange={(e) => setViewPitch(Number(e.target.value))}
+                onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
+                onPointerUp={() => commit(dragStartRef.current ?? undefined)}
+                onKeyUp={() => commit()}
+              />
+              <span className="param-value">{viewPitch}°</span>
+            </div>
           </section>
 
           <section className="panel-section">

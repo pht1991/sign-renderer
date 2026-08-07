@@ -235,7 +235,7 @@ export function recoverCameraPose(
  * k 为常数、与 depthZ 解耦，使不同厚度下观感一致。0 表示厚度纯平行（无透视），
  * 越大立体边越明显。取值接近真实针孔相机在典型安装距离下的收缩量（约 5%~12%）。
  */
-const SIGN_FORESHORTEN = 0.1
+export const SIGN_FORESHORTEN = 0.1
 
 /**
  * 直接由单应构造「投影相机矩阵」(4×4, 行主序)，使标识前脸(z=0)精确落入照片四边形，
@@ -252,6 +252,8 @@ const SIGN_FORESHORTEN = 0.1
  * @param W   渲染画布宽（与 quad 同单位）
  * @param Hh  渲染画布高
  * @param depthZ 标识沿 z 的厚度（世界单位，>0），用于深度缓冲归一化与透视收缩量
+ * @param foreshorten 厚度方向透视收缩强度（等效相机远近）：0=无透视(平行厚度)，
+ *   越大立体边越明显；默认取 SIGN_FORESHORTEN。由 App 的「视角·透视强度」滑块控制。
  * @returns 行主序 4×4 投影矩阵（可直接传给 THREE.Matrix4.set），退化时返回 null
  */
 export function buildSignProjectionMatrix(
@@ -260,6 +262,7 @@ export function buildSignProjectionMatrix(
   W: number,
   Hh: number,
   depthZ: number,
+  foreshorten: number = SIGN_FORESHORTEN,
 ): number[] | null {
   const H = solveHomography(modelRect, quad)
   if (!H) return null
@@ -279,7 +282,7 @@ export function buildSignProjectionMatrix(
   ]
 
   // 厚度透视收缩：后脸(z=-depthZ)的裁剪 w 增加 k → 屏幕上按 1/(1+k) 缩小。
-  const k = SIGN_FORESHORTEN
+  const k = foreshorten
   const m32 = -k / Math.max(depthZ, 1e-3)
 
   // 深度缓冲：把 z∈[-depthZ,0] 线性映射到裁剪 z∈[0, ~0.99]，避免厚标被近/远裁剪掉。

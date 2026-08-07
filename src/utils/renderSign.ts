@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { svgToGroup, normalizeGroup } from './svgToMesh'
 import { PRESETS, type SignPreset, type SvgBBox, detectSvgLayers } from './svgMeta'
-import { buildSignProjectionMatrix, type Point } from './perspectiveWarp'
+import { buildSignProjectionMatrix, SIGN_FORESHORTEN, type Point } from './perspectiveWarp'
 
 /**
  * Three.js 离屏渲染：将标识渲染为带 3D 厚度 + 光照 + 材质质感的透明背景 Canvas
@@ -24,7 +24,17 @@ export interface RenderOptions {
    * 让标识沿墙面外法线做真实透视挤出（不再用正交相机 + 2D 错切近似）。
    * 不传则回退到正交相机直视渲染（用于无照片/无标记点的独立预览）。
    */
-  camera?: { quad: [Point, Point, Point, Point]; imgW: number; imgH: number }
+  camera?: {
+    quad: [Point, Point, Point, Point]
+    imgW: number
+    imgH: number
+    /** 厚度方向透视收缩强度（等效相机远近）：0=无透视平行厚度，越大立体边越明显。默认 0.1 */
+    foreshorten?: number
+    /** 视角方位倾角（度）：旋转标识凸出的深度轴，后脸在屏幕左右偏移，模拟从左/右观察。前脸仍钉在四点 */
+    tiltYaw?: number
+    /** 视角俯仰倾角（度）：后脸在屏幕上下偏移，模拟从上/下观察。前脸仍钉在四点 */
+    tiltPitch?: number
+  }
   /** 立体分层：将 SVG 顶层 <g>/可绘制元素按图层分别拉伸并沿 Z 堆叠成浮雕 */
   layered?: boolean
   /** 层间距：相邻图层在 Z 方向的间隙（单位与 depth 一致），越大浮雕越明显 */
@@ -45,7 +55,17 @@ interface CoreRenderInput {
    * 真实 3D 透视投影：给定照片中四边形与画布尺寸，由单应分解反解相机位姿，
    * 让标识沿墙面外法线做真实透视挤出。不传则回退到正交相机直视渲染。
    */
-  camera?: { quad: [Point, Point, Point, Point]; imgW: number; imgH: number }
+  camera?: {
+    quad: [Point, Point, Point, Point]
+    imgW: number
+    imgH: number
+    /** 厚度方向透视收缩强度（等效相机远近）：0=无透视平行厚度，越大立体边越明显。默认 0.1 */
+    foreshorten?: number
+    /** 视角方位倾角（度）：旋转标识凸出的深度轴，后脸在屏幕左右偏移，模拟从左/右观察。前脸仍钉在四点 */
+    tiltYaw?: number
+    /** 视角俯仰倾角（度）：后脸在屏幕上下偏移，模拟从上/下观察。前脸仍钉在四点 */
+    tiltPitch?: number
+  }
   /** 标识厚度（同一单位体系下的滑块值），用于把厚度侧边错切幅度限制在合理比例 */
   depth?: number
   /** 由调用方根据自身的材质数组顺序，设置正面 / 侧面材质 */
@@ -233,7 +253,21 @@ async function renderPerspective(
   // 平移后背面位于 z=-depthZ（墙内方向），正面位于 z=0 精确贴合四点；从侧面仍
   // 能看到厚度边，立体感由真实透视投影动态决定。
   const frontZ = preBox.max.z
-  group.position.z += -frontZ
+  group.position.z += -frontZ // 前脸(z=max.z)对齐到世界 z=0，由单应精确贴合四点
+
+  // 视角倾角：以剪切矩阵旋转“凸出的深度轴”。前脸(z=0)不受剪切影响、仍钉在四点；
+  // 后脸(z=-depth)随 tiltYaw/tiltPitch 在屏幕偏移，模拟标识从某角度被观察。
+  // a=tan(yaw) 控制左右、b=tan(pitch) 控制上下；小角度保证观感自然。
+  const yaw = ((cam.tiltYaw ?? 0) * Math.PI) / 180
+  const pitch = ((cam.tiltPitch ?? 0) * Math.PI) / 180
+  const a = Math.tan(yaw)
+  const b = Math.tan(pitch)
+  group.updateMatrix()
+  const shear = new THREE.Matrix4().set(1, 0, a, 0, 0, 1, b, 0, 0, 0, 1, 0, 0, 0, 0, 1)
+  group.matrix.premultiply(shear)
+  group.matrixAutoUpdate = false
+  group.matrixWorldAutoUpdate = false
+  group.matrixWorld.copy(group.matrix)
 
   // 模型矩形（前脸包围盒，与 normalizeGroup 后一致）：最大边=2、居中、z=0。
   const hw = Math.max((preBox.max.x - preBox.min.x) / 2, 1e-4)
@@ -257,7 +291,7 @@ async function renderPerspective(
   })) as [Point, Point, Point, Point]
 
   const depthZ = Math.max(0.001, frontZ - preBox.min.z)
-  const proj = buildSignProjectionMatrix(modelRect, q, W, Hh, depthZ)
+  const proj = buildSignProjectionMatrix(modelRect, q, W, Hh, depthZ, cam.foreshorten ?? SIGN_FORESHORTEN)
   if (!proj) {
     // 退化：恢复前脸位置并回退正交渲染，避免整段渲染失败。
     group.position.z += frontZ
