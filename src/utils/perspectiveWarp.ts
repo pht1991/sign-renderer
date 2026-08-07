@@ -231,7 +231,7 @@ export function recoverCameraPose(
 
 /**
  * 厚度方向透视强度（等效相机远近 / 凸出放大）。
- * 标识正脸(z=-depthZ，朝观察者凸出)在裁剪空间的 w 上减少 k，使其按 1/(1-k) 放大
+ * 标识正脸(z=+depthZ，朝观察者凸出)在裁剪空间的 w 上减少 k，使其按 1/(1-k) 放大
  * （朝相机灭点凸出、比例放大）；四点所在的墙基座(z=0)保持原尺寸精确贴合外立面。
  * k 与 depthZ 解耦，使不同厚度下观感一致。0=平行厚度（无凸出放大），越大立体越明显。
  */
@@ -239,11 +239,11 @@ export const SIGN_FORESHORTEN = 0.1
 
 /**
  * 直接由单应构造「投影相机矩阵」(4×4, 行主序)，使标识墙基座(z=0)精确落入照片四边形
- * （四点=贴合外立面的位置），正脸(z=-depthZ)朝相机凸出并被透视放大，呈现“从墙面
+ * （四点=贴合外立面的位置），正脸(z=+depthZ)朝相机凸出并被透视放大，呈现“从墙面
  * 往外突出、随比例放大”的立体效果。
  *
  * 几何语义：四点(z=0)是标识在外立面上的基座/安装面，保持原尺寸精确贴合；正脸位于
- * z=-depthZ，比基座更靠近观察者，被透视放大（等效相机更近），故视觉上“外推且放大”。
+ * z=+depthZ，比基座更靠近观察者，被透视放大（等效相机更近），故视觉上“外推且放大”。
  *
  * 为什么不用 recoverCameraPose 的 K·[R|t] 分解：
  * 单图位姿恢复的本征病态（近正面 / 竖直边时焦距 f→∞ 退化）使 R 无法同时正交且精确
@@ -251,11 +251,11 @@ export const SIGN_FORESHORTEN = 0.1
  * 这里绕过 K·[R|t]，直接把单应 H 嵌入 4×4 投影矩阵——墙基座映射由 H 精确保证
  * （当且仅当 z=0），厚度项只控制 z 方向透视强弱，不影响墙基座贴合。
  *
- * @param modelRect 标识矩形四角 [左上,右上,右下,左下]（模型坐标；z=0 为墙基座，z=-depthZ 为正脸）
+ * @param modelRect 标识矩形四角 [左上,右上,右下,左下]（模型坐标；z=0 为墙基座，z=+depthZ 为正脸）
  * @param quad       照片中四边形四角(=墙基座贴合位置，同序，单位须与 W/Hh 一致)
  * @param W   渲染画布宽（与 quad 同单位）
  * @param Hh  渲染画布高
- * @param depthZ 标识沿 z 的厚度（世界单位，>0）：正脸在 z=-depthZ，墙基座在 z=0
+ * @param depthZ 标识沿 z 的厚度（世界单位，>0）：正脸在 z=+depthZ，墙基座在 z=0
  * @param foreshorten 厚度方向透视强度（等效相机远近 / 凸出放大）：0=无透视(平行厚度)，
  *   越大正脸凸出放大越明显；默认取 SIGN_FORESHORTEN。由 App 的「视角·透视强度」滑块控制。
  * @returns 行主序 4×4 投影矩阵（可直接传给 THREE.Matrix4.set），退化时返回 null
@@ -285,23 +285,26 @@ export function buildSignProjectionMatrix(
     H[6], H[7], H[8],
   ]
 
-  // 厚度凸出放大：正脸(z=-depthZ)的裁剪 w 减少 k → 屏幕上按 1/(1-k) 放大（凸出墙外）。
-  // 墙基座(z=0)的 w 不变，仍精确贴合四点；z 越往正脸方向，w 越小、画面越大。
+  // 厚度凸出放大：正脸(z=+depthZ，朝相机凸出)的裁剪 w 减少 k → 屏幕上按 1/(1-k) 放大
+  // （凸出墙外、比例放大）；墙基座(z=0)的 w 不变，仍精确贴合四点。
   const k = foreshorten
-  const m32 = k / Math.max(depthZ, 1e-3)
+  const m32 = -k / Math.max(depthZ, 1e-3)
 
-  // 深度缓冲：把 z∈[0,-depthZ] 线性映射到裁剪 z∈[0, ~-0.5·(1-k)]，正脸(z=-depthZ)更靠
-  // 近相机（NDC.z 更负），墙基座(z=0)在 0；系数随 (1-k) 收敛，保证任意 k 不被裁剪。
-  const invDepth = 0.5 * (1 - Math.min(k, 0.9)) / Math.max(depthZ, 1e-3)
+  // 深度缓冲：墙基座(z=0)落在远端(NDC.z=FAR)，正脸(z=+depthZ)落在近端(NDC.z=0)，
+  // 保证“朝相机凸出”的正脸在深度测试上压过墙基座、始终可见在最前；两平面均落在
+  // [-1,1] 内（FAR<1），任意 k∈[0,0.4] 都不会被近/远裁剪面裁掉。
+  const FAR = 0.8
+  const m22 = -FAR / Math.max(depthZ, 1e-3)
+  const m23 = FAR
 
   // 4×4 投影矩阵（行主序），WebGL 约定下：clip = M · (x,y,z,1)，NDC = clip.xyz / clip.w
   //  row0/1 = H_ndc 前两行（z=0 时墙基座精确落在四边形=四点）
-  //  row2   = (0,0,+invDepth,0) 深度：墙基座 z=0 → 0，正脸 z=-depthZ → 更负（更近）
+  //  row2   = (0,0,m22,m23) 深度：墙基座 z=0 → FAR(远)，正脸 z=+depthZ → 0(近)
   //  row3   = H_ndc 第三行 + m32·z（透视除法 w：正脸 w 减小 → 放大凸出）
   return [
     Hn[0], Hn[1], 0, Hn[2],
     Hn[3], Hn[4], 0, Hn[5],
-    0, 0, invDepth, 0,
+    0, 0, m22, m23,
     Hn[6], Hn[7], m32, Hn[8],
   ]
 }

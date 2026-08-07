@@ -246,17 +246,16 @@ async function renderPerspective(
   const { group, renderSize, ambientColor, applyMaterial, extraDispose = [], enableShadow = false, camera } = input
   const cam = camera!
 
-  // 几何语义翻转：四点(墙基座)= 标识贴合外立面的位置(z=0)，正脸朝相机凸出(z=-depthZ)
-  // 并被透视放大。为把贴图正脸送到凸出端，这里把整体几何沿 z 镜像（仅翻深度、不翻
-  // x/y，贴图方向不变），使原 max.z 的正脸落到 z=-depthZ，原 min.z 的墙基座落到 z=0。
-  group.scale.z *= -1
+  // 几何语义：四点(墙基座)= 标识贴合外立面的位置(z=0)，正脸(贴图面, 原 max.z)朝相机
+  // 凸出(z=+depthZ)并被透视放大。无需镜像几何——直接把墙基座(原 min.z)对齐到世界 z=0，
+  // 贴图正脸(原 max.z)自然落在 z=+depthZ，法线保持朝相机、光照正确、纹理不被翻转。
   group.updateMatrixWorld(true)
   const bbox = new THREE.Box3().setFromObject(group)
 
-  // 把墙基座(max.z，镜像后=原 min.z)对齐到世界 z=0，由单应精确贴合四点(外立面位置)；
-  // 正脸(min.z，镜像后=原 max.z)落在 z=-depthZ，经投影透视放大、朝相机凸出。
-  const wallZ = bbox.max.z
-  group.position.z += -wallZ // 墙基座(z=max.z after mirror)对齐 z=0 = 四点
+  // 把墙基座(min.z)对齐到世界 z=0，由单应精确贴合四点(外立面位置)；
+  // 正脸(max.z)落在 z=+depthZ，经投影透视放大、朝相机凸出。
+  const wallZ = bbox.min.z
+  group.position.z += -wallZ // 墙基座(z=min.z)对齐 z=0 = 四点
 
   // 视角倾角：以剪切矩阵旋转“凸出的深度轴”。墙基座(z=0)不受剪切影响、仍钉在四点；
   // 正脸(z=-depthZ)随 tiltYaw/tiltPitch 在屏幕偏移，模拟标识从某角度被观察。
@@ -298,7 +297,6 @@ async function renderPerspective(
   if (!proj) {
     // 退化：恢复几何并回退正交渲染，避免整段渲染失败。
     group.position.z += wallZ
-    group.scale.z *= -1
     return renderGroupToCanvas({ ...input, camera: undefined })
   }
 
