@@ -1,0 +1,18 @@
+src/App.tsx
+  h_70068c5a17f62a 64,280,282,353-354,358-361,369-370
+src/utils/perspectiveWarp.ts
+  h_70068c5a17f62a 238
+src/utils/renderSign.ts
+  h_70068c5a17f62a 474-475
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "bc6f3b58a399d452ec3c5015bcd93f0befa0bf7a",
+  "prompts": {},
+  "humans": {
+    "h_70068c5a17f62a": {
+      "author": "panhaitao-9ap2u <panhaitao@sdpjw.com>"
+    }
+  }
+}
