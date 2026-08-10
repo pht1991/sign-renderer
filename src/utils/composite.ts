@@ -95,17 +95,6 @@ export function compositeImage(
   // 绘制建筑照片底图（按输出分辨率放大填充）
   ctx.drawImage(photoImage, 0, 0, canvas.width, canvas.height)
 
-  // 将显示坐标换算为输出图坐标（已含 outputScale 倍率）
-  const scaleX = canvas.width / displayWidth
-  const scaleY = canvas.height / displayHeight
-
-  const dstPoints: [Point, Point, Point, Point] = [
-    { x: points[0].x * scaleX, y: points[0].y * scaleY },
-    { x: points[1].x * scaleX, y: points[1].y * scaleY },
-    { x: points[2].x * scaleX, y: points[2].y * scaleY },
-    { x: points[3].x * scaleX, y: points[3].y * scaleY },
-  ]
-
   // signCanvas 已是照片坐标系里的透视投影图（带 alpha），1:1 贴到合成图
   // （与渲染分辨率同比例，导出高倍率时自动等比放大，保持清晰）。
   const sp = contactShadowPasses(canvas.width, shadowDepth, shadowAzimuth)
@@ -125,40 +114,7 @@ export function compositeImage(
   // 再绘制清晰标识（无阴影）
   ctx.drawImage(signCanvas, 0, 0, canvas.width, canvas.height)
 
-  // 绘制四点标记（参考线，半透明）
-  drawGuideLines(ctx, dstPoints)
-
   return canvas
-}
-
-/**
- * 在合成图上绘制四点参考线（用于确认标记位置）
- */
-function drawGuideLines(
-  ctx: CanvasRenderingContext2D,
-  points: [Point, Point, Point, Point],
-): void {
-  ctx.save()
-  ctx.strokeStyle = 'rgba(255, 200, 0, 0.6)'
-  ctx.lineWidth = Math.max(2, ctx.canvas.width * 0.003)
-  ctx.setLineDash([10, 6])
-  ctx.beginPath()
-  ctx.moveTo(points[0].x, points[0].y)
-  for (let i = 1; i < 4; i++) {
-    ctx.lineTo(points[i].x, points[i].y)
-  }
-  ctx.closePath()
-  ctx.stroke()
-
-  // 标记点
-  ctx.setLineDash([])
-  ctx.fillStyle = 'rgba(255, 200, 0, 0.9)'
-  for (const p of points) {
-    ctx.beginPath()
-    ctx.arc(p.x, p.y, Math.max(4, ctx.canvas.width * 0.005), 0, Math.PI * 2)
-    ctx.fill()
-  }
-  ctx.restore()
 }
 
 /**
