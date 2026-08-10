@@ -1,0 +1,14 @@
+src/utils/renderSign.ts
+  h_70068c5a17f62a 595,597,615
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "fe3014642cebe9d0c176a74adece13f2387823af",
+  "prompts": {},
+  "humans": {
+    "h_70068c5a17f62a": {
+      "author": "panhaitao-9ap2u <panhaitao@sdpjw.com>"
+    }
+  }
+}
