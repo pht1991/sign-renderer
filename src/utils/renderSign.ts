@@ -592,8 +592,9 @@ async function renderLayeredToCanvas(
   // 逐层解析几何，过滤掉零几何图层（如 <text>、空 <g> 等 SVGLoader 无法拉伸的内容）
   // 与隐藏图层（不参与堆叠）。每层按各自厚度 layerDepths[i] 拉伸，沿 +Z 堆叠：
   // 底层(i=0)贴墙基座(z=0)，上层逐层外凸，层间留 layerGap 间隙。
+  // 关闭倒角：用户要求「柱体」式直上直下外凸，不需要顶部斜面。
   const built = layers.map((ly, i) => ({
-    sub: svgToGroup(ly.svg, layerDepths[i] ?? 0, true),
+    sub: svgToGroup(ly.svg, layerDepths[i] ?? 0, false),
     svg: ly.svg,
     i,
   }))
@@ -611,7 +612,7 @@ async function renderLayeredToCanvas(
       disposeObject(b.sub)
       continue
     }
-    // 分层模式固定带倒角，浮雕侧面更真实；每层沿 +Z 堆叠（底层贴墙基座）
+    // 分层模式关闭倒角：顶部保持平面，形成直上直下的柱体/方块凸出；每层沿 +Z 堆叠（底层贴墙基座）
     b.sub.position.z = z
     parent.add(b.sub)
     z += (layerDepths[b.i] ?? 0) + layerGap
