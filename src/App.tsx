@@ -61,7 +61,7 @@ const MIN_ZOOM = 0.1
 const MAX_ZOOM = 8
 
 // 多层 SVG 开启「立体分层」时，每层预置厚度（首次开启即从平面变为可见浮雕，避免 z 冲突）
-const DEFAULT_LAYER_DEPTH = 15
+const DEFAULT_LAYER_DEPTH = 0
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v))
@@ -277,9 +277,9 @@ export default function App() {
   const [lockRatio, setLockRatio] = useState(false)
   const [preset, setPreset] = useState<SignPreset>('matte')
   const [perspective, setPerspective] = useState<number>(0)
-  // 立体分层：检测到多层 SVG 时启用，沿 Z 堆叠成浮雕；层间距控制浮雕间隙
+  // 立体分层：检测到多层 SVG 时启用，沿 Z 堆叠成浮雕；层间距控制浮雕间隙（默认 0，贴死无间隙）
   const [layered, setLayered] = useState(false)
-  const [layerGap, setLayerGap] = useState(10)
+  const [layerGap, setLayerGap] = useState(0)
   // 高清边缘：2x 超采样渲染后经 warp 下采样，边缘更干净（质量设置，不计入撤销历史）
   const [aa, setAa] = useState(true)
   const [ambientColor, setAmbientColor] = useState<string>('')
@@ -350,11 +350,15 @@ export default function App() {
     [svgString],
   )
   const layerCount = layers?.length ?? 0
-  // 上传新标识：默认平面显示——厚度归 0、关闭立体分层，并初始化每层厚度/可见性。
-  // 多层 SVG 预置每层厚度（开启立体分层时即呈现浮雕，避免零厚度层 z 冲突）。
+  // 上传新标识：默认平面显示——所有立体相关参数归 0（厚度、层间距、透视强度、倾角、分层），
+  // 并初始化每层厚度为 0（用户手动开启立体分层后再逐层调厚度）。
   useEffect(() => {
     setDepth(0)
     setLayered(false)
+    setLayerGap(0)
+    setForeshorten(0)
+    setViewYaw(0)
+    setViewPitch(0)
     setLayerDepths(layerCount >= 2 ? new Array(layerCount).fill(DEFAULT_LAYER_DEPTH) : [])
     setLayerVisible(layerCount >= 2 ? new Array(layerCount).fill(true) : [])
   }, [svgString, signImageSrc, layerCount])
@@ -362,8 +366,8 @@ export default function App() {
   // === 光照 / 导出分辨率控制 ===
   const [lightAzimuth, setLightAzimuth] = useState<number>(0)
   const [lightIntensity, setLightIntensity] = useState<number>(1)
-  // 视角（3D 凸出方向）：透视强度=等效相机远近；Yaw/Pitch=旋转凸出轴，前脸仍钉在四点
-  const [foreshorten, setForeshorten] = useState<number>(0.1)
+  // 视角（3D 凸出方向）：透视强度=等效相机远近；Yaw/Pitch=旋转凸出轴，前脸仍钉在四点（默认 0，平面无凸出）
+  const [foreshorten, setForeshorten] = useState<number>(0)
   const [viewYaw, setViewYaw] = useState<number>(0)
   const [viewPitch, setViewPitch] = useState<number>(0)
   const [exportScale, setExportScale] = useState<number>(1)

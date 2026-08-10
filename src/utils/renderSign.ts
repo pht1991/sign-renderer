@@ -471,8 +471,8 @@ export async function renderSignToCanvas(
   }
 
   // 创建标识 Group（归一化到最大边长 = 2，居中于原点）
-  // 拉伸铺满时关闭倒角，避免倒角外扩导致正面无法精确填满画布
-  const group = svgToGroup(svgString, depth, !stretch)
+  // 单层模式也关闭倒角：与分层一致，直上直下凸出，顶部保持平面
+  const group = svgToGroup(svgString, depth, false)
   normalizeGroup(group, 2)
 
   // 拉伸铺满：非等比缩放填满正方形画布；必须重新居中，否则几何中心偏离原点

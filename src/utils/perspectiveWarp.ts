@@ -235,7 +235,7 @@ export function recoverCameraPose(
  * （朝相机灭点凸出、比例放大）；四点所在的墙基座(z=0)保持原尺寸精确贴合外立面。
  * k 与 depthZ 解耦，使不同厚度下观感一致。0=平行厚度（无凸出放大），越大立体越明显。
  */
-export const SIGN_FORESHORTEN = 0.1
+export const SIGN_FORESHORTEN = 0
 
 /**
  * 直接由单应构造「投影相机矩阵」(4×4, 行主序)，使标识墙基座(z=0)精确落入照片四边形
