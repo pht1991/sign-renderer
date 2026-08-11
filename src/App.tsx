@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { pdfFileToImage } from './utils/pdfToImage'
 import { PRESETS, type SignPreset, detectSvgLayers } from './utils/svgMeta'
-import { warpPerspective, type Point } from './utils/perspectiveWarp'
+import { warpPerspective, warpArc, type Point } from './utils/perspectiveWarp'
 import { compositeImage, downloadCanvas, safeExportScale, contactShadowPasses } from './utils/composite'
 
 /**
@@ -295,6 +295,9 @@ export default function App() {
   const [photoWarn, setPhotoWarn] = useState('')
   // 指针是否悬停在标识四边形内（用于显示 move 光标，提示可整体拖动）
   const [overQuad, setOverQuad] = useState(false)
+  // 弧面贴合（圆柱外立面）：开启后用曲率把标识随弧贴合，平面逻辑零回归
+  const [arcMode, setArcMode] = useState(false)
+  const [curvature, setCurvature] = useState(0.25)
 
   const photoRef = useRef<HTMLImageElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
@@ -392,6 +395,8 @@ export default function App() {
     foreshorten: number
     viewYaw: number
     viewPitch: number
+    arcMode: boolean
+    curvature: number
   }
   const editRef = useRef<EditState>({
     points: INITIAL_POINTS,
@@ -399,6 +404,7 @@ export default function App() {
     lightAzimuth: 0, lightIntensity: 1, layered, layerGap,
     layerDepths, layerVisible,
     foreshorten, viewYaw, viewPitch,
+    arcMode, curvature,
   })
   const pointsRef = useRef<[Point, Point, Point, Point]>(INITIAL_POINTS)
   const dragStartRef = useRef<EditState | null>(null)
@@ -413,8 +419,9 @@ export default function App() {
       lightAzimuth, lightIntensity, layered, layerGap,
       layerDepths, layerVisible,
       foreshorten, viewYaw, viewPitch,
+      arcMode, curvature,
     }
-  }, [points, depth, color, stretch, lockRatio, preset, perspective, lightAzimuth, lightIntensity, layered, layerGap, layerDepths, layerVisible, foreshorten, viewYaw, viewPitch])
+  }, [points, depth, color, stretch, lockRatio, preset, perspective, lightAzimuth, lightIntensity, layered, layerGap, layerDepths, layerVisible, foreshorten, viewYaw, viewPitch, arcMode, curvature])
 
   const applyState = useCallback((s: EditState) => {
     setPoints(s.points)
@@ -433,6 +440,8 @@ export default function App() {
     setForeshorten(s.foreshorten)
     setViewYaw(s.viewYaw)
     setViewPitch(s.viewPitch)
+    setArcMode(s.arcMode)
+    setCurvature(s.curvature)
   }, [])
 
   const commit = useCallback((before?: EditState) => {
@@ -479,8 +488,10 @@ export default function App() {
       const natW = photo?.naturalWidth || displaySize.w
       const natH = photo?.naturalHeight || displaySize.h
       const quadValid = displaySize.w > 0 && displaySize.h > 0 && isQuadValid(points) === null
+      // 弧面模式：用曲率把平面标识随弧贴合（平面 homography 表达不了曲面，故绕过相机投影）
+      const useArc = arcMode && !!photo && quadValid
       const camera =
-        photo && quadValid
+        !useArc && photo && quadValid
           ? {
               quad: points.map((p) => ({
                 x: (p.x / displaySize.w) * natW,
@@ -497,6 +508,54 @@ export default function App() {
       // 动态引入渲染器：把 Three.js + 渲染管线拆成独立 chunk，
       // 首屏只加载 React UI，渲染引擎在首次需要时再异步加载，首屏更快。
       const { renderSignToCanvas, renderImageToCanvas } = await import('./utils/renderSign')
+
+      // 弧面模式：先渲染平面标识（无相机投影），再用 warpArc 随弧贴合到照片四边形
+      if (useArc) {
+        const renderFlat = async (): Promise<HTMLCanvasElement> => {
+          if (svgString) {
+            return renderSignToCanvas(svgString, 0, aa ? 1024 : 512, {
+              stretch,
+              color,
+              preset,
+              ambientColor: ambientColor || undefined,
+              lightAzimuth,
+              lightIntensity,
+              layered: layerCount > 1 ? layered : false,
+              layerGap,
+              layerDepths: layered ? layerDepths : undefined,
+              layerVisible: layered ? layerVisible : undefined,
+            })
+          }
+          return new Promise<HTMLCanvasElement>((resolve, reject) => {
+            const img = new Image()
+            img.onload = () => {
+              setImageAspect(img.width / img.height)
+              renderImageToCanvas(img, 0, aa ? 1024 : 512, {
+                stretch,
+                color,
+                preset,
+                ambientColor: ambientColor || undefined,
+                lightAzimuth,
+                lightIntensity,
+              }).then(resolve, reject)
+            }
+            img.onerror = reject
+            img.src = signImageSrc
+          })
+        }
+        const flat = await renderFlat()
+        const target = document.createElement('canvas')
+        target.width = natW
+        target.height = natH
+        const tctx = target.getContext('2d')!
+        const quadPhoto = points.map((p) => ({
+          x: (p.x / displaySize.w) * natW,
+          y: (p.y / displaySize.h) * natH,
+        })) as [Point, Point, Point, Point]
+        warpArc(tctx, flat, flat.width, flat.height, quadPhoto, curvature)
+        return target
+      }
+
       if (svgString) {
         return renderSignToCanvas(svgString, depth, aa ? 1024 : 512, {
           stretch,
@@ -558,12 +617,14 @@ export default function App() {
       window.clearTimeout(timer)
       cancelled = true
     }
-  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity, layered, layerGap, layerDepths, layerVisible, aa, layerCount, displaySize.w, displaySize.h, points, foreshorten, viewYaw, viewPitch])
+  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity, layered, layerGap, layerDepths, layerVisible, aa, layerCount, displaySize.w, displaySize.h, points, foreshorten, viewYaw, viewPitch, arcMode, curvature])
 
   // === 2. 实时预览合成 ===
   // 有效厚度：用于接触阴影强弱。立体分层时取各层厚度之和 + 层间距；否则取全局厚度。
-  const effectiveDepth =
-    layered && layerDepths.length
+  // 弧面模式为平面贴合（无沿弧挤出），阴影按 0 处理，避免凭空出现厚度阴影。
+  const effectiveDepth = arcMode
+    ? 0
+    : layered && layerDepths.length
       ? layerDepths.reduce((a, b) => a + b, 0) + layerGap * Math.max(0, layerDepths.length - 1)
       : depth
 
@@ -1427,6 +1488,40 @@ export default function App() {
             </button>
           </section>
 
+          <section className="panel-section">
+            <h2>弧面贴合（圆柱外立面）</h2>
+            <p className="hint">开启后，标识会随外立面弧形贴合（默认平面显示）。适用于圆弧幕墙、建筑圆角等竖向弧面场景。</p>
+            <div className="param-row">
+              <label>弧面模式</label>
+              <input
+                type="checkbox"
+                checked={arcMode}
+                onChange={(e) => { setArcMode(e.target.checked); commit() }}
+              />
+              <span className="param-value">{arcMode ? '开' : '关'}</span>
+            </div>
+            {arcMode && (
+              <>
+                <div className="param-row">
+                  <label>曲率</label>
+                  <input
+                    type="range"
+                    min="-0.5"
+                    max="0.5"
+                    step="0.02"
+                    value={curvature}
+                    onChange={(e) => setCurvature(Number(e.target.value))}
+                    onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
+                    onPointerUp={() => commit(dragStartRef.current ?? undefined)}
+                    onKeyUp={() => commit()}
+                  />
+                  <span className="param-value">{curvature.toFixed(2)}</span>
+                </div>
+                <p className="hint">正值外凸、负值内凹。弧面模式下标识以平面贴合弧面；厚度/分层沿弧挤出将于后续版本补充。</p>
+              </>
+            )}
+          </section>
+
           {layerCount >= 2 && (
             <section className="panel-section">
               <h2>层级管理（立体分层）</h2>
@@ -1516,6 +1611,7 @@ export default function App() {
             </section>
           )}
 
+          {!arcMode && (
           <section className="panel-section">
             <h2>视角（3D 凸出方向）</h2>
             <p className="hint">前脸始终贴合四点；下列控制只调整 3D 凸出部分的透视与观察角度，让立体效果更贴近真实拍摄视角</p>
@@ -1565,6 +1661,7 @@ export default function App() {
               <span className="param-value">{viewPitch}°</span>
             </div>
           </section>
+          )}
 
           <section className="panel-section">
             <h2>标记说明</h2>

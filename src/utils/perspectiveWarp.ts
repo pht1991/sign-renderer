@@ -449,3 +449,84 @@ function drawTriangle(
   ctx.drawImage(image, 0, 0)
   ctx.restore()
 }
+
+/**
+ * 弧面贴合（圆柱外立面）：把平面标识贴图 warp 到「上下边弯曲、左右边竖直」的四边形。
+ *
+ * 原理：竖向圆柱幕墙下，标识的上下边在照片里呈向外弓起的弧（中间列最高、边缘列被透视
+ * 收窄），左右边为竖直直线。这里用二次贝塞尔把上下边弯成弧（曲率控制弓起方向与强度），
+ * 再用细分网格把平面贴图（已正交直视渲染、透明背景）逆采样贴合到弧面四边形。
+ *
+ * 与 warpPerspective 的区别：源 UV 是线性的（平面贴图本就直视），目标边界是弯曲四边形；
+ * 无需单应矩阵（平面 homography 表达不了曲面），直接按 (u,v)→弧面坐标 做网格 warp。
+ *
+ * @param ctx        目标 2D 上下文（照片尺寸画布）
+ * @param image      平面标识贴图（透明背景，已正交直视渲染）
+ * @param srcW/srcH  贴图尺寸
+ * @param dst        照片中四点 [左上, 右上, 右下, 左下]，单位与 ctx 画布一致
+ * @param curvature  曲率：>0 外凸（中间列最高），<0 内凹；0=平面
+ * @param contentScale 平面渲染留白回缩系数（约1.03），让标识内容填满四边形；1=不回缩
+ */
+export function warpArc(
+  ctx: CanvasRenderingContext2D,
+  image: CanvasImageSource,
+  srcW: number,
+  srcH: number,
+  dst: [Point, Point, Point, Point],
+  curvature: number,
+  contentScale = 1.0,
+): void {
+  const [tl, tr, br, bl] = dst
+  // 上下边中点与中心，用于求弓起控制点
+  const topMid = { x: (tl.x + tr.x) / 2, y: (tl.y + tr.y) / 2 }
+  const botMid = { x: (bl.x + br.x) / 2, y: (bl.y + br.y) / 2 }
+  const centerY = (topMid.y + botMid.y) / 2
+  // 弓起方向：上下边中点向「远离中心」偏移（外凸时顶边更上、底边更下 → 中间列最高）
+  const topCtrl = { x: topMid.x, y: topMid.y + curvature * (topMid.y - centerY) }
+  const botCtrl = { x: botMid.x, y: botMid.y + curvature * (botMid.y - centerY) }
+
+  // 二次贝塞尔：p0→p2 经控制点 p1
+  const bez = (p0: Point, p1: Point, p2: Point, t: number): Point => {
+    const u = 1 - t
+    return {
+      x: u * u * p0.x + 2 * u * t * p1.x + t * t * p2.x,
+      y: u * u * p0.y + 2 * u * t * p1.y + t * t * p2.y,
+    }
+  }
+  const topEdge = (u: number) => bez(tl, topCtrl, tr, u)
+  const botEdge = (u: number) => bez(bl, botCtrl, br, u)
+  // 目标点：列 u 处，底边→顶边按 v 线性插值（左右边因此保持竖直）
+  const dest = (u: number, v: number): Point => {
+    const b = botEdge(u)
+    const t = topEdge(u)
+    return { x: b.x + (t.x - b.x) * v, y: b.y + (t.y - b.y) * v }
+  }
+
+  const canvasW = ctx.canvas.width
+  const canvasH = ctx.canvas.height
+  const cols = Math.max(12, Math.min(48, Math.ceil(Math.max(canvasW, canvasH) / 40)))
+  const rows = Math.max(4, Math.round((cols * srcH) / srcW))
+
+  // 源 UV：线性映射到贴图，用 contentScale 把留白回缩到填满四边形
+  const sX = (u: number) => ((u - 0.5) * contentScale + 0.5) * srcW
+  const sY = (v: number) => ((v - 0.5) * contentScale + 0.5) * srcH
+
+  for (let i = 0; i < cols; i++) {
+    const u0 = i / cols
+    const u1 = (i + 1) / cols
+    for (let j = 0; j < rows; j++) {
+      const v0 = j / rows
+      const v1 = (j + 1) / rows
+      const d00 = dest(u0, v0)
+      const d10 = dest(u1, v0)
+      const d11 = dest(u1, v1)
+      const d01 = dest(u0, v1)
+      const s00 = { x: sX(u0), y: sY(v0) }
+      const s10 = { x: sX(u1), y: sY(v0) }
+      const s11 = { x: sX(u1), y: sY(v1) }
+      const s01 = { x: sX(u0), y: sY(v1) }
+      drawTriangle(ctx, image, [s00, s10, s11], [d00, d10, d11])
+      drawTriangle(ctx, image, [s00, s11, s01], [d00, d11, d01])
+    }
+  }
+}
