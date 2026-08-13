@@ -1,0 +1,14 @@
+src/App.tsx
+  h_70068c5a17f62a 301-302,367,403,411,426,428,449,560-586,652,656,658,1552-1567
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.25",
+  "base_commit_sha": "ac38ca3ae6c140d223105b702c3fdb6b2b85849b",
+  "prompts": {},
+  "humans": {
+    "h_70068c5a17f62a": {
+      "author": "panhaitao-9ap2u <panhaitao@sdpjw.com>"
+    }
+  }
+}
