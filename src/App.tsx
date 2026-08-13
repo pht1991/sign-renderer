@@ -298,6 +298,8 @@ export default function App() {
   // 弧面贴合（圆柱外立面）：开启后用曲率把标识随弧贴合，平面逻辑零回归
   const [arcMode, setArcMode] = useState(false)
   const [curvature, setCurvature] = useState(0.25)
+  // 弧面模式下的厚度（沿弧面法线径向凸出）；0=平面贴合，>0 出现上下边厚度唇
+  const [arcDepth, setArcDepth] = useState<number>(0)
 
   const photoRef = useRef<HTMLImageElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
@@ -362,6 +364,7 @@ export default function App() {
     setForeshorten(0)
     setViewYaw(0)
     setViewPitch(0)
+    setArcDepth(0)
     setLayerDepths(layerCount >= 2 ? new Array(layerCount).fill(DEFAULT_LAYER_DEPTH) : [])
     setLayerVisible(layerCount >= 2 ? new Array(layerCount).fill(true) : [])
   }, [svgString, signImageSrc, layerCount])
@@ -397,6 +400,7 @@ export default function App() {
     viewPitch: number
     arcMode: boolean
     curvature: number
+    arcDepth: number
   }
   const editRef = useRef<EditState>({
     points: INITIAL_POINTS,
@@ -404,7 +408,7 @@ export default function App() {
     lightAzimuth: 0, lightIntensity: 1, layered, layerGap,
     layerDepths, layerVisible,
     foreshorten, viewYaw, viewPitch,
-    arcMode, curvature,
+    arcMode, curvature, arcDepth,
   })
   const pointsRef = useRef<[Point, Point, Point, Point]>(INITIAL_POINTS)
   const dragStartRef = useRef<EditState | null>(null)
@@ -419,9 +423,9 @@ export default function App() {
       lightAzimuth, lightIntensity, layered, layerGap,
       layerDepths, layerVisible,
       foreshorten, viewYaw, viewPitch,
-      arcMode, curvature,
+      arcMode, curvature, arcDepth,
     }
-  }, [points, depth, color, stretch, lockRatio, preset, perspective, lightAzimuth, lightIntensity, layered, layerGap, layerDepths, layerVisible, foreshorten, viewYaw, viewPitch, arcMode, curvature])
+  }, [points, depth, color, stretch, lockRatio, preset, perspective, lightAzimuth, lightIntensity, layered, layerGap, layerDepths, layerVisible, foreshorten, viewYaw, viewPitch, arcMode, curvature, arcDepth])
 
   const applyState = useCallback((s: EditState) => {
     setPoints(s.points)
@@ -442,6 +446,7 @@ export default function App() {
     setViewPitch(s.viewPitch)
     setArcMode(s.arcMode)
     setCurvature(s.curvature)
+    setArcDepth(s.arcDepth)
   }, [])
 
   const commit = useCallback((before?: EditState) => {
@@ -552,6 +557,33 @@ export default function App() {
           x: (p.x / displaySize.w) * natW,
           y: (p.y / displaySize.h) * natH,
         })) as [Point, Point, Point, Point]
+
+        if (arcDepth > 0) {
+          // 弧面厚度 = 沿弧面法线径向凸出：以半径 R+t 渲染「背面/侧面」轮廓（曲率随厚度放大，
+          // 顶/底边外凸更多），作为厚度唇垫在标识正脸之下；正脸仍以半径 R 按 curvature 贴合墙面，
+          // 于是上下边露出一圈厚度色，左右边因沿圆柱轴无曲率而不可见（与真实弧面一致）。
+          const edgeColor = (() => {
+            const d = flat.getContext('2d')!.getImageData(0, 0, flat.width, flat.height).data
+            let r = 0, g = 0, b = 0, n = 0
+            for (let i = 3; i < d.length; i += 4) {
+              if (d[i] > 10) { r += d[i - 3]; g += d[i - 2]; b += d[i - 1]; n++ }
+            }
+            if (!n) return '#000000'
+            // 侧面作为受光阴影面，取标识平均色压暗到 55%，自然融入正脸
+            return `rgb(${Math.round((r / n) * 0.55)},${Math.round((g / n) * 0.55)},${Math.round((b / n) * 0.55)})`
+          })()
+          const sil = document.createElement('canvas')
+          sil.width = flat.width
+          sil.height = flat.height
+          const sx = sil.getContext('2d')!
+          sx.drawImage(flat, 0, 0)
+          sx.globalCompositeOperation = 'source-in'
+          sx.fillStyle = edgeColor
+          sx.fillRect(0, 0, sil.width, sil.height)
+          // 厚度越大，背面轮廓曲率放大越多（顶/底边外凸越明显）；系数可按手感调
+          const k = 1 + arcDepth / 160
+          warpArc(tctx, sil, sil.width, sil.height, quadPhoto, curvature * k)
+        }
         warpArc(tctx, flat, flat.width, flat.height, quadPhoto, curvature)
         return target
       }
@@ -617,13 +649,13 @@ export default function App() {
       window.clearTimeout(timer)
       cancelled = true
     }
-  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity, layered, layerGap, layerDepths, layerVisible, aa, layerCount, displaySize.w, displaySize.h, points, foreshorten, viewYaw, viewPitch, arcMode, curvature])
+  }, [svgString, signImageSrc, depth, color, stretch, preset, ambientColor, lightAzimuth, lightIntensity, layered, layerGap, layerDepths, layerVisible, aa, layerCount, displaySize.w, displaySize.h, points, foreshorten, viewYaw, viewPitch, arcMode, curvature, arcDepth])
 
   // === 2. 实时预览合成 ===
   // 有效厚度：用于接触阴影强弱。立体分层时取各层厚度之和 + 层间距；否则取全局厚度。
-  // 弧面模式为平面贴合（无沿弧挤出），阴影按 0 处理，避免凭空出现厚度阴影。
+  // 弧面模式下取弧面厚度 arcDepth（0 时仍无阴影，与平面一致）。
   const effectiveDepth = arcMode
-    ? 0
+    ? arcDepth
     : layered && layerDepths.length
       ? layerDepths.reduce((a, b) => a + b, 0) + layerGap * Math.max(0, layerDepths.length - 1)
       : depth
@@ -1517,7 +1549,22 @@ export default function App() {
                   />
                   <span className="param-value">{curvature.toFixed(2)}</span>
                 </div>
-                <p className="hint">正值外凸、负值内凹。弧面模式下标识以平面贴合弧面；厚度/分层沿弧挤出将于后续版本补充。</p>
+                <div className="param-row">
+                  <label>厚度</label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="80"
+                    step="1"
+                    value={arcDepth}
+                    onChange={(e) => setArcDepth(Number(e.target.value))}
+                    onPointerDown={() => { dragStartRef.current = { ...editRef.current, points: pointsRef.current } }}
+                    onPointerUp={() => commit(dragStartRef.current ?? undefined)}
+                    onKeyUp={() => commit()}
+                  />
+                  <span className="param-value">{arcDepth}</span>
+                </div>
+                <p className="hint">正值外凸、负值内凹。厚度沿弧面法线径向凸出，上下边会露出厚度唇（左右边沿圆柱轴不可见，与真实弧面一致）。</p>
               </>
             )}
           </section>
