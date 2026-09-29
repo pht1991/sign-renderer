@@ -1,0 +1,26 @@
+src/App.css
+  s_2421242316b263::t_22ee0135c68e23 742-746
+src/AffiliateBanner.tsx
+  s_2421242316b263::t_930d7b4776dfd5 23-24,67-79
+public/about.html
+  s_2421242316b263::t_af2557a65258a0 22,49-50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.33",
+  "base_commit_sha": "5acf7a6c85b631b280d733ed6886252fd6fb8daf",
+  "prompts": {},
+  "sessions": {
+    "s_2421242316b263": {
+      "agent_id": {
+        "tool": "workbuddy",
+        "id": "00aab39a-69ad-452b-9fd5-60d74b193a0a",
+        "model": "hy3-x"
+      },
+      "human_author": "panhaitao-9ap2u <panhaitao@sdpjw.com>",
+      "custom_attributes": {
+        "internal_commit_event_allowlist": "codeup.aliyun.com,codeup-*"
+      }
+    }
+  }
+}
