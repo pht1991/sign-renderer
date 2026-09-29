@@ -1,0 +1,22 @@
+src/App.css
+  s_7d974edcfaaa30::t_3e6c0f571e57da 805-806
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.33",
+  "base_commit_sha": "fb0f5777b505fd98fa787d261188f39fdb6307bc",
+  "prompts": {},
+  "sessions": {
+    "s_7d974edcfaaa30": {
+      "agent_id": {
+        "tool": "workbuddy",
+        "id": "fa0f921f-1ac0-41d0-9541-a6db41123698",
+        "model": "hy3-x"
+      },
+      "human_author": "panhaitao-9ap2u <panhaitao@sdpjw.com>",
+      "custom_attributes": {
+        "internal_commit_event_allowlist": "codeup.aliyun.com,codeup-*"
+      }
+    }
+  }
+}
