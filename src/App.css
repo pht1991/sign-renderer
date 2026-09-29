@@ -739,6 +739,11 @@ body {
 .ab-kofi {
   background: #29abe0;
 }
+.ab-disabled {
+  pointer-events: none;
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 .ab-sponsor {
   background: #10b981;
 }

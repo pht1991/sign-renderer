@@ -19,6 +19,7 @@
   .chip span { color: #6b7280; font-size: 12px; }
   .btn { display: inline-block; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-size: 14px; margin-right: 10px; }
   .kofi { background: #29abe0; color: #fff; }
+  .disabled { pointer-events: none; opacity: 0.55; cursor: not-allowed; }
   .ftc { margin-top: 36px; padding-top: 16px; border-top: 1px solid #2a2e38; font-size: 12px; color: #6b7280; }
   code { background: #15181f; padding: 2px 6px; border-radius: 4px; color: #93c5fd; }
 </style>
@@ -45,7 +46,8 @@
   <h2>Support this tool</h2>
   <p>If Sign Renderer saved you time, consider supporting its development:</p>
   <p>
-    <a class="btn kofi" href="https://ko-fi.com/haitaopan" target="_blank" rel="noopener">☕ Ko-fi</a>
+    <!-- KOFI_DISABLED: re-enable after PayPal/Ko-fi setup by restoring href="https://ko-fi.com/haitaopan" and removing class "disabled" -->
+    <a class="btn kofi disabled" aria-disabled="true" title="Donation setup in progress" rel="noopener">☕ Ko-fi</a>
   </p>
 
   <a class="back" href="./">← Back to Sign Renderer</a>
