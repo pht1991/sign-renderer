@@ -33,6 +33,33 @@ body {
   color: #fff;
 }
 
+.lang-switch {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 4px;
+  background: #0f1115;
+  border: 1px solid #2a2e38;
+  border-radius: 8px;
+  padding: 3px;
+}
+.lang-btn {
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 13px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.lang-btn:hover {
+  color: #e0e0e0;
+}
+.lang-btn.active {
+  background: #3b82f6;
+  color: #fff;
+}
+
 .main-layout {
   display: flex;
   flex: 1;

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { pdfFileToImage } from './utils/pdfToImage'
 import { PRESETS, type SignPreset, detectSvgLayers } from './utils/svgMeta'
 import { warpPerspective, warpArc, type Point } from './utils/perspectiveWarp'
+import { useI18n } from './i18n'
 import { compositeImage, downloadCanvas, safeExportScale, contactShadowPasses } from './utils/composite'
 
 /**
@@ -35,24 +36,24 @@ function getSvgAspectRatio(svgString: string): number | null {
  */
 function validateSvg(svgString: string): string | null {
   if (!svgString || !svgString.trim().toLowerCase().includes('<svg')) {
-    return '文件内容不是有效的 SVG（缺少 <svg> 根元素）'
+    return 'errSvgRoot'
   }
   try {
     const doc = new DOMParser().parseFromString(svgString, 'image/svg+xml')
     if (doc.getElementsByTagName('parsererror').length > 0) {
-      return 'SVG 解析失败：文件可能存在 XML 语法错误，请检查后重试'
+      return 'errSvgParse'
     }
     const svg = doc.querySelector('svg')
-    if (!svg) return '未找到 <svg> 根元素，请确认文件为 SVG 格式'
+    if (!svg) return 'errSvgNoRoot'
     const hasContent = svg.querySelector(
       'path, rect, circle, ellipse, line, polyline, polygon, text, image, g',
     )
     if (!hasContent) {
-      return 'SVG 中未找到可渲染的图形（path / rect / circle / text 等），请检查内容'
+      return 'errSvgNoShape'
     }
     return null
   } catch {
-    return 'SVG 解析失败，请确认文件内容正确'
+    return 'errSvgGeneric'
   }
 }
 
@@ -177,7 +178,7 @@ function quadArea(pts: [Point, Point, Point, Point]): number {
 
 function isQuadValid(pts: [Point, Point, Point, Point]): string | null {
   if (quadArea(pts) < 100) {
-    return '四点区域过小，请把四个角点拖开成合适的矩形后再导出'
+    return 'errQuadSmall'
   }
   // TL/TR/BR/BL 顺序下相邻边叉积应同号；出现异号即自交 / 顺序错乱
   let sign = 0
@@ -190,7 +191,7 @@ function isQuadValid(pts: [Point, Point, Point, Point]): string | null {
       const s = cross > 0 ? 1 : -1
       if (sign === 0) sign = s
       else if (s !== sign) {
-        return '四个角点顺序错乱（出现交叉），请调整回左上 / 右上 / 右下 / 左下'
+        return 'errQuadOrder'
       }
     }
   }
@@ -300,6 +301,14 @@ export default function App() {
   const [curvature, setCurvature] = useState(0.25)
   // 弧面模式下的厚度（沿弧面法线径向凸出）；0=平面贴合，>0 出现上下边厚度唇
   const [arcDepth, setArcDepth] = useState<number>(0)
+
+  // 多语言：中文基线 + 英文；首次按浏览器语言判定，用户切换后记忆
+  const { lang, setLang, t } = useI18n()
+
+  // 同步文档标题（标签页显示），随语言切换更新
+  useEffect(() => {
+    document.title = t('title')
+  }, [lang, t])
 
   const photoRef = useRef<HTMLImageElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
@@ -618,7 +627,7 @@ export default function App() {
           }).then(resolve)
         }
         img.onerror = () => {
-          setSignWarn('图片加载失败，请换一张试试')
+          setSignWarn(t('errImgLoad'))
           setSignCanvas(null)
           setIsRendering(false)
         }
@@ -637,8 +646,8 @@ export default function App() {
           if (!cancelled) {
             // 区分输入类型给出针对性提示：SVG 与图片/AI/EPS 的失败原因不同
             const msg = svgString
-              ? 'SVG 渲染失败，可能包含当前不支持的元素，建议导出为精简 SVG 后重试'
-              : '图片 / AI / EPS 加载失败，请换一张试试，或导出为 SVG 后上传'
+              ? t('errSvgRender')
+              : t('errImgRender')
             setSignWarn(msg)
             setSignCanvas(null)
             setIsRendering(false)
@@ -769,7 +778,7 @@ export default function App() {
     setPoints(initPoints)
     // 大尺寸照片提醒：导出高倍率时会自动降档，避免用户误以为能导出超清大图
     if (img.naturalWidth > 4096 || img.naturalHeight > 4096) {
-      setPhotoWarn('照片尺寸较大（>4096px），导出 4x 时会自动降档以保证成功')
+      setPhotoWarn(t('warnPhotoLarge'))
     } else {
       setPhotoWarn('')
     }
@@ -1038,7 +1047,7 @@ export default function App() {
           setSignImageSrc('')
           setImageAspect(null)
           setSvgString('')
-          setSignWarn(err)
+          setSignWarn(t(err))
           return
         }
         setSignImageSrc('')
@@ -1068,11 +1077,11 @@ export default function App() {
         })
         .catch(() => {
           setSignWarn(
-            'AI / EPS 解析失败：请在 Illustrator 或 Inkscape 中“导出为 SVG”后再上传',
+            t('errAiEpsParse'),
           )
         })
     } else {
-      setSignWarn('不支持的文件格式，请上传 SVG 矢量图或 PNG / JPG / WebP 图片')
+      setSignWarn(t('errUnsupportedFormat'))
     }
   }
 
@@ -1090,7 +1099,7 @@ export default function App() {
     const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
     const isVector = ['svg', 'ai', 'eps'].includes(ext) || file.type.includes('svg')
     if (isVector) {
-      setPhotoWarn('矢量文件（SVG / AI / EPS）请在右侧「广告标识」区上传')
+      setPhotoWarn(t('errVectorWrongArea'))
       return
     }
     processPhotoFile(file)
@@ -1156,7 +1165,7 @@ export default function App() {
     // 边界：四点自交 / 区域过小会导致 homography 退化，先拦截避免合成崩溃
     const quadErr = isQuadValid(points)
     if (quadErr) {
-      setSignWarn(quadErr)
+      setSignWarn(t(quadErr))
       return
     }
     setExporting(true)
@@ -1167,7 +1176,7 @@ export default function App() {
         const usedScale = safeExportScale(img.naturalWidth, img.naturalHeight, exportScale)
         if (usedScale < exportScale - 1e-3) {
           setSignWarn(
-            `照片较大，已自动将导出分辨率降至 ${usedScale.toFixed(1)}x 以保证导出成功`,
+            t('exportDownscale', { s: usedScale.toFixed(1) }),
           )
         }
         const canvas = compositeImage(
@@ -1184,11 +1193,11 @@ export default function App() {
         const extMap = { png: 'png', jpg: 'jpg', webp: 'webp' } as const
         downloadCanvas(
           canvas,
-          `广告标识安装效果图_${usedScale.toFixed(1)}x.${extMap[exportFormat]}`,
+          t('downloadName', { s: usedScale.toFixed(1), ext: extMap[exportFormat] }),
           fmtMap[exportFormat],
         )
       } catch {
-        setSignWarn('导出失败，请降低导出分辨率或重新上传照片后重试')
+        setSignWarn(t('errExportFail'))
       } finally {
         setExporting(false)
       }
@@ -1251,14 +1260,24 @@ export default function App() {
     }
   }, [signAspect, displaySize.w, displaySize.h, photoLoaded, fitPointsToSvgRatio])
 
-  const pointLabels = ['左上', '右上', '右下', '左下']
+  const pointLabels = [t('tl'), t('tr'), t('br'), t('bl')]
   const pointColors = ['#e74c3c', '#2ecc71', '#3498db', '#f39c12']
 
   return (
     <div className="app">
       <header className="app-header">
-        <h1>广告标识外立面安装效果图生成器</h1>
-
+        <h1>{t('title')}</h1>
+        <div className="lang-switch" role="group" aria-label="Language">
+          {(['zh', 'en'] as const).map((code) => (
+            <button
+              key={code}
+              className={`lang-btn${lang === code ? ' active' : ''}`}
+              onClick={() => setLang(code)}
+            >
+              {code === 'zh' ? '中文' : 'EN'}
+            </button>
+          ))}
+        </div>
       </header>
 
       <div className="main-layout">
@@ -1271,10 +1290,10 @@ export default function App() {
               onDragLeave={onPhotoDragLeave}
               onDrop={onPhotoDrop}
             >
-              <p>上传建筑外立面照片</p>
-              <p className="drag-hint">或将照片拖拽到此处</p>
+              <p>{t('uploadPhotoTitle')}</p>
+              <p className="drag-hint">{t('dragPhotoHint')}</p>
               <label className="upload-btn">
-                选择照片
+                {t('choosePhoto')}
                 <input type="file" accept="image/*" onChange={handlePhotoUpload} hidden />
               </label>
               {photoWarn && <p className="status-warn">{photoWarn}</p>}
@@ -1298,7 +1317,7 @@ export default function App() {
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={resetView}
                 >
-                  重置视图
+                  {t('resetView')}
                 </button>
                 {photoWarn && <p className="status-warn photo-warn">{photoWarn}</p>}
               </div>
@@ -1314,7 +1333,7 @@ export default function App() {
                 <img
                   ref={photoRef}
                   src={photoUrl}
-                  alt="建筑外立面"
+                  alt={t('buildingFacadeAlt')}
                   onLoad={onPhotoLoad}
                   style={{ width: displaySize.w, height: displaySize.h }}
                   draggable={false}
@@ -1361,9 +1380,9 @@ export default function App() {
             onDragLeave={onSignDragLeave}
             onDrop={onSignDrop}
           >
-            <h2>广告标识</h2>
+            <h2>{t('signTitle')}</h2>
             <label className="upload-btn small">
-              上传标识（SVG / 图片）
+              {t('uploadSign')}
               <input
                 type="file"
                 accept=".svg,image/svg+xml,.png,.jpg,.jpeg,.webp,.gif,.ai,.eps,application/postscript,image/*"
@@ -1372,27 +1391,27 @@ export default function App() {
               />
             </label>
             <button className="text-btn" onClick={loadSampleSvg}>
-              使用示例 LOGO
+              {t('useSampleLogo')}
             </button>
-            {svgString && <p className="status-ok">SVG 标识已加载</p>}
-            {signImageSrc && !svgString && <p className="status-ok">图片标识已加载</p>}
+            {svgString && <p className="status-ok">{t('svgLoaded')}</p>}
+            {signImageSrc && !svgString && <p className="status-ok">{t('imageLoaded')}</p>}
             {!svgString && !signImageSrc && (
-              <p className="hint">尚未上传标识：可上传 SVG / 图片 / AI / EPS，或点「使用示例 LOGO」快速体验</p>
+              <p className="hint">{t('noSignHint')}</p>
             )}
             {signWarn && <p className="status-warn">{signWarn}</p>}
             {(isRendering || exporting) && (
               <div className="loading-row">
                 <span className="spinner" />
-                <span>{exporting ? '正在导出效果图...' : '正在渲染 3D 标识...'}</span>
+                <span>{exporting ? t('exporting') : t('rendering')}</span>
               </div>
             )}
           </section>
 
           <section className="panel-section">
-            <h2>参数设置</h2>
+            <h2>{t('paramsTitle')}</h2>
             {layerCount < 2 && (
               <div className="param-row">
-                <label>厚度</label>
+                <label>{t('depth')}</label>
                 <input
                   type="range"
                   min="0"
@@ -1407,7 +1426,7 @@ export default function App() {
               </div>
             )}
             <div className="param-row">
-              <label>{signImageSrc && !svgString ? '边框色' : '颜色'}</label>
+              <label>{signImageSrc && !svgString ? t('borderColor') : t('color')}</label>
               <input
                 type="color"
                 value={color}
@@ -1417,16 +1436,16 @@ export default function App() {
               <span className="param-value">{color}</span>
             </div>
             <div className="param-row">
-              <label>拉伸铺满</label>
+              <label>{t('stretch')}</label>
               <input
                 type="checkbox"
                 checked={stretch}
                 onChange={(e) => { setStretch(e.target.checked); commit() }}
               />
-              <span className="param-value">{stretch ? '开' : '关'}</span>
+                <span className="param-value">{stretch ? t('on') : t('off')}</span>
             </div>
             <div className="param-row">
-              <label>材质</label>
+              <label>{t('material')}</label>
               <select
                 value={preset}
                 onChange={(e) => { setPreset(e.target.value as SignPreset); commit() }}
@@ -1434,39 +1453,39 @@ export default function App() {
               >
                 {(Object.keys(PRESETS) as SignPreset[]).map((key) => (
                   <option key={key} value={key}>
-                    {PRESETS[key].label}
+                    {t('preset_' + key)}
                   </option>
                 ))}
               </select>
             </div>
             <div className="param-row">
-              <label>高清边缘</label>
+              <label>{t('aa')}</label>
               <input
                 type="checkbox"
                 checked={aa}
                 onChange={(e) => setAa(e.target.checked)}
               />
-              <span className="param-value">{aa ? '开' : '关'}</span>
+              <span className="param-value">{aa ? t('on') : t('off')}</span>
             </div>
             <div className="param-row">
-              <label>锁定 SVG 比例</label>
+              <label>{t('lockRatio')}</label>
               <input
                 type="checkbox"
                 checked={lockRatio}
                 onChange={(e) => { setLockRatio(e.target.checked); commit() }}
               />
-              <span className="param-value">{lockRatio ? '开' : '关'}</span>
+              <span className="param-value">{lockRatio ? t('on') : t('off')}</span>
             </div>
             {signAspect && (
               <div className="param-row">
-                <label>标识比例</label>
+                <label>{t('signRatio')}</label>
                 <span className="param-value">{signAspect.toFixed(2)}</span>
               </div>
             )}
             {lockRatio && signAspect && (
               <>
                 <div className="param-row">
-                  <label>透视</label>
+                  <label>{t('perspective')}</label>
                   <input
                     type="range"
                     min="0"
@@ -1481,13 +1500,13 @@ export default function App() {
                   <span className="param-value">{perspective.toFixed(2)}</span>
                 </div>
                 <button className="text-btn" onClick={fitPointsToSvgRatio}>
-                  按 SVG 比例适配四点（梯形）
+                  {t('fitPointsTrapezoid')}
                 </button>
               </>
             )}
             {/* 光照控制：方位角 + 强度，解决背光照片不自然 */}
             <div className="param-row">
-              <label>光照方向</label>
+              <label>{t('lightDir')}</label>
               <input
                 type="range"
                 min="-90"
@@ -1501,7 +1520,7 @@ export default function App() {
               <span className="param-value">{lightAzimuth}°</span>
             </div>
             <div className="param-row">
-              <label>光照强度</label>
+              <label>{t('lightIntensity')}</label>
               <input
                 type="range"
                 min="0.3"
@@ -1516,26 +1535,26 @@ export default function App() {
               <span className="param-value">{lightIntensity.toFixed(1)}</span>
             </div>
             <button className="text-btn" onClick={autoMatchLight}>
-              自动匹配光照（基于照片）
+              {t('autoMatchLight')}
             </button>
           </section>
 
           <section className="panel-section">
-            <h2>弧面贴合（圆柱外立面）</h2>
-            <p className="hint">开启后，标识会随外立面弧形贴合（默认平面显示）。适用于圆弧幕墙、建筑圆角等竖向弧面场景。</p>
+            <h2>{t('arcTitle')}</h2>
+            <p className="hint">{t('arcHint')}</p>
             <div className="param-row">
-              <label>弧面模式</label>
+              <label>{t('arcMode')}</label>
               <input
                 type="checkbox"
                 checked={arcMode}
                 onChange={(e) => { setArcMode(e.target.checked); commit() }}
               />
-              <span className="param-value">{arcMode ? '开' : '关'}</span>
+              <span className="param-value">{arcMode ? t('on') : t('off')}</span>
             </div>
             {arcMode && (
               <>
                 <div className="param-row">
-                  <label>曲率</label>
+                  <label>{t('curvature')}</label>
                   <input
                     type="range"
                     min="-0.5"
@@ -1550,7 +1569,7 @@ export default function App() {
                   <span className="param-value">{curvature.toFixed(2)}</span>
                 </div>
                 <div className="param-row">
-                  <label>厚度</label>
+                  <label>{t('depth')}</label>
                   <input
                     type="range"
                     min="0"
@@ -1564,17 +1583,17 @@ export default function App() {
                   />
                   <span className="param-value">{arcDepth}</span>
                 </div>
-                <p className="hint">正值外凸、负值内凹。厚度沿弧面法线径向凸出，上下边会露出厚度唇（左右边沿圆柱轴不可见，与真实弧面一致）。</p>
+                <p className="hint">{t('arcDepthHint')}</p>
               </>
             )}
           </section>
 
           {layerCount >= 2 && (
             <section className="panel-section">
-              <h2>层级管理（立体分层）</h2>
-              <p className="hint">检测到 {layerCount} 个图层。开启「立体分层」后，可分别设置每层的厚度组成立体浮雕；默认平面显示，立体效果由你调整。</p>
+              <h2>{t('layerTitle')}</h2>
+              <p className="hint">{t('layerHint', { n: layerCount })}</p>
               <div className="param-row">
-                <label>立体分层</label>
+                <label>{t('layered')}</label>
                 <input
                   type="checkbox"
                   checked={layered}
@@ -1588,7 +1607,7 @@ export default function App() {
                     commit()
                   }}
                 />
-                <span className="param-value">{layered ? '开' : '关'}</span>
+                <span className="param-value">{layered ? t('on') : t('off')}</span>
               </div>
               {layered && (
                 <>
@@ -1607,7 +1626,7 @@ export default function App() {
                             })
                             commit()
                           }}
-                          title="显示该层"
+                          title={t('showLayerTitle')}
                         />
                         <span className="layer-name" title={ly.label}>{ly.label}</span>
                         <input
@@ -1632,8 +1651,8 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  <div className="param-row">
-                    <label>层间距</label>
+                    <div className="param-row">
+                      <label>{t('layerGap')}</label>
                     <input
                       type="range"
                       min="0"
@@ -1647,12 +1666,12 @@ export default function App() {
                     />
                     <span className="param-value">{layerGap}</span>
                   </div>
-                  <p className="hint">列表首项为底层（贴合墙面），向上逐层凸出；每层厚度可单独调整，取消勾选的层不参与立体堆叠。</p>
+                  <p className="hint">{t('layerListHint')}</p>
                 </>
               )}
               {svgString.includes('<text') && (
                 <p className="hint">
-                  提示：原 SVG 含文字（&lt;text&gt;），该层可能无法拉伸，建议导出前将文字“创建轮廓 / 转曲为路径”
+                  {t('textWarnHint')}
                 </p>
               )}
             </section>
@@ -1660,10 +1679,10 @@ export default function App() {
 
           {!arcMode && (
           <section className="panel-section">
-            <h2>视角（3D 凸出方向）</h2>
-            <p className="hint">前脸始终贴合四点；下列控制只调整 3D 凸出部分的透视与观察角度，让立体效果更贴近真实拍摄视角</p>
+            <h2>{t('viewTitle')}</h2>
+            <p className="hint">{t('viewHint')}</p>
             <div className="param-row">
-              <label>透视强度</label>
+              <label>{t('foreshorten')}</label>
               <input
                 type="range"
                 min="0"
@@ -1678,7 +1697,7 @@ export default function App() {
               <span className="param-value">{foreshorten.toFixed(2)}</span>
             </div>
             <div className="param-row">
-              <label>视角·左右</label>
+              <label>{t('viewYaw')}</label>
               <input
                 type="range"
                 min="-35"
@@ -1693,7 +1712,7 @@ export default function App() {
               <span className="param-value">{viewYaw}°</span>
             </div>
             <div className="param-row">
-              <label>视角·上下</label>
+              <label>{t('viewPitch')}</label>
               <input
                 type="range"
                 min="-35"
@@ -1711,15 +1730,15 @@ export default function App() {
           )}
 
           <section className="panel-section">
-            <h2>标记说明</h2>
+            <h2>{t('markersTitle')}</h2>
             <div className="param-row">
-              <label>辅助网格</label>
+              <label>{t('grid')}</label>
               <input
                 type="checkbox"
                 checked={showGrid}
                 onChange={(e) => setShowGrid(e.target.checked)}
               />
-              <span className="param-value">{showGrid ? '开' : '关'}</span>
+              <span className="param-value">{showGrid ? t('on') : t('off')}</span>
             </div>
             <div className="point-legend">
               {pointLabels.map((label, i) => (
@@ -1731,32 +1750,32 @@ export default function App() {
                 </div>
               ))}
             </div>
-            <p className="hint">拖动四个角点对齐形状；在标识区域内拖拽可整体移动图层，在画面空白处拖拽平移视图，滚轮 / 双指捏合缩放查看细节</p>
+            <p className="hint">{t('markersHint')}</p>
           </section>
 
           <section className="panel-section">
             <div className="param-row">
-              <label>导出分辨率</label>
+              <label>{t('exportRes')}</label>
               <select
                 value={exportScale}
                 onChange={(e) => setExportScale(Number(e.target.value))}
                 className="preset-select"
               >
-                <option value={1}>1x（原图）</option>
-                <option value={2}>2x（高清）</option>
-                <option value={4}>4x（超清）</option>
+                <option value={1}>{t('res1x')}</option>
+                <option value={2}>{t('res2x')}</option>
+                <option value={4}>{t('res4x')}</option>
               </select>
             </div>
             <div className="param-row">
-              <label>导出格式</label>
+              <label>{t('exportFormatLabel')}</label>
               <select
                 value={exportFormat}
                 onChange={(e) => setExportFormat(e.target.value as 'png' | 'jpg' | 'webp')}
                 className="preset-select"
               >
-                <option value="png">PNG（无损）</option>
-                <option value="jpg">JPG（体积小）</option>
-                <option value="webp">WebP（兼顾）</option>
+                <option value="png">{t('fmtPng')}</option>
+                <option value="jpg">{t('fmtJpg')}</option>
+                <option value="webp">{t('fmtWebp')}</option>
               </select>
             </div>
             <button
@@ -1764,10 +1783,10 @@ export default function App() {
               disabled={!photoUrl || !signCanvas}
               onClick={handleExport}
             >
-              导出效果图
+              {t('exportBtn')}
             </button>
-            {!photoUrl && <p className="hint">请先上传建筑照片</p>}
-            {!signCanvas && <p className="hint">请先上传 SVG 标识</p>}
+            {!photoUrl && <p className="hint">{t('needPhoto')}</p>}
+            {!signCanvas && <p className="hint">{t('needSign')}</p>}
           </section>
 
           <section className="panel-section">
@@ -1777,17 +1796,17 @@ export default function App() {
                 onClick={undo}
                 disabled={historyRef.current.index <= 0}
               >
-                ↶ 撤销
+                {t('undo')}
               </button>
               <button
                 className="text-btn"
                 onClick={redo}
                 disabled={historyRef.current.index >= historyRef.current.stack.length - 1}
               >
-                ↷ 重做
+                {t('redo')}
               </button>
             </div>
-            <p className="hint">Ctrl/⌘+Z 撤销，Ctrl/⌘+Shift+Z 或 Ctrl+Y 重做</p>
+            <p className="hint">{t('undoHint')}</p>
           </section>
         </div>
       </div>
