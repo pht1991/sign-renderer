@@ -19,7 +19,7 @@ const PRODUCTS = [
   { kw: 'graphics tablet', labelKey: 'abProdTablet' },
 ]
 
-const KOFI_URL = 'https://ko-fi.com/haitaopan'
+const BMC_URL = 'https://buymeacoffee.com/haitaopan'
 
 export default function AffiliateBanner() {
   const { t } = useI18n()
@@ -62,8 +62,8 @@ export default function AffiliateBanner() {
             <h3 className="ab-title">{t('abSupportTitle')}</h3>
             <p className="ab-sub">{t('abSupportSub')}</p>
             <div className="ab-donate">
-              <a className="ab-btn ab-kofi" href={KOFI_URL} target="_blank" rel="noopener">
-                ☕ Ko-fi
+              <a className="ab-btn ab-bmc" href={BMC_URL} target="_blank" rel="noopener">
+                ☕ Buy Me a Coffee
               </a>
             </div>
           </div>
