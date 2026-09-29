@@ -4,6 +4,7 @@ import { PRESETS, type SignPreset, detectSvgLayers } from './utils/svgMeta'
 import { warpPerspective, warpArc, type Point } from './utils/perspectiveWarp'
 import { useI18n } from './i18n'
 import { compositeImage, downloadCanvas, safeExportScale, contactShadowPasses } from './utils/composite'
+import AffiliateBanner from './AffiliateBanner'
 
 /**
  * 从 SVG 的 viewBox / width / height 中提取宽高比
@@ -1267,6 +1268,10 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1>{t('title')}</h1>
+        <nav className="top-nav">
+          <a href="about.html">About</a>
+          <a href="privacy.html">Privacy</a>
+        </nav>
         <div className="lang-switch" role="group" aria-label="Language">
           {(['zh', 'en'] as const).map((code) => (
             <button
@@ -1810,6 +1815,7 @@ export default function App() {
           </section>
         </div>
       </div>
+      <AffiliateBanner />
     </div>
   )
 }

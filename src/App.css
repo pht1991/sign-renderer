@@ -645,3 +645,130 @@ body {
 .main-layout::-webkit-scrollbar-corner {
   background: #15181f;
 }
+
+/* === Top nav (About / Privacy) in header === */
+.top-nav {
+  display: flex;
+  gap: 14px;
+  margin-right: 8px;
+}
+.top-nav a {
+  color: #9ca3af;
+  text-decoration: none;
+  font-size: 13px;
+  transition: color 0.15s;
+}
+.top-nav a:hover {
+  color: #e0e0e0;
+}
+
+/* === Affiliate + support banner (bottom of app) === */
+.affiliate-banner {
+  flex-shrink: 0;
+  background: #11141a;
+  border-top: 1px solid #2a2e38;
+  padding: 16px 24px 14px;
+}
+.ab-inner {
+  display: flex;
+  gap: 32px;
+  flex-wrap: wrap;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+.ab-col {
+  flex: 1;
+  min-width: 260px;
+}
+.ab-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e0e0e0;
+  margin-bottom: 4px;
+}
+.ab-sub {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+.ab-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ab-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  background: #1a1d24;
+  border: 1px solid #2a2e38;
+  border-radius: 8px;
+  color: #e0e0e0;
+  text-decoration: none;
+  font-size: 13px;
+  transition: border-color 0.15s, transform 0.1s;
+}
+.ab-chip:hover {
+  border-color: #3b82f6;
+  transform: translateY(-1px);
+}
+.ab-amz {
+  color: #6b7280;
+  font-size: 11px;
+}
+.ab-donate {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ab-btn {
+  display: inline-block;
+  padding: 8px 16px;
+  border-radius: 8px;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  color: #fff;
+  transition: opacity 0.15s;
+}
+.ab-btn:hover {
+  opacity: 0.88;
+}
+.ab-kofi {
+  background: #29abe0;
+}
+.ab-sponsor {
+  background: #10b981;
+}
+.ab-foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  max-width: 1100px;
+  margin: 12px auto 0;
+  padding-top: 10px;
+  border-top: 1px solid #1f232c;
+}
+.ab-nav {
+  display: flex;
+  gap: 14px;
+  flex-shrink: 0;
+}
+.ab-nav a {
+  color: #9ca3af;
+  text-decoration: none;
+  font-size: 12px;
+}
+.ab-nav a:hover {
+  color: #e0e0e0;
+}
+.ab-ftc {
+  font-size: 11px;
+  color: #5b6573;
+  line-height: 1.5;
+  flex: 1;
+  min-width: 280px;
+}
