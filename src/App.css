@@ -736,9 +736,8 @@ body {
 .ab-btn:hover {
   opacity: 0.88;
 }
-.ab-bmc {
-  background: #ffdd00;
-  color: #1a1a1a;
+.ab-kofi {
+  background: #29abe0;
 }
 .ab-sponsor {
   background: #10b981;
