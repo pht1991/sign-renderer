@@ -802,7 +802,8 @@ body {
 }
 .ab-chevron {
   color: #8a93a6;
-  font-size: 12px;
+  font-size: 20px;
+  line-height: 1;
   transition: transform 0.2s ease;
 }
 .ab-body {
