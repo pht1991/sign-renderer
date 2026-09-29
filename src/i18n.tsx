@@ -100,6 +100,20 @@ const zh: Record<string, string> = {
   errExportFail: '导出失败，请降低导出分辨率或重新上传照片后重试',
   downloadName: '广告标识安装效果图_{{s}}x.{{ext}}',
 
+  // 联盟推广横幅（AffiliateBanner）
+  abToggle: '推荐好物与赞助',
+  abGearTitle: '推荐硬件',
+  abGearSub: '帮你制作标识与 3D 预览的硬件。联盟链接，对你无额外费用。',
+  abOnAmazon: '在 Amazon 上 ↗',
+  abProdPrinter: '3D 打印机',
+  abProdMonitor: '4K 显示器',
+  abProdTablet: '绘图板',
+  abSupportTitle: '支持本工具',
+  abSupportSub: 'Sign Renderer 免费使用。若它帮你省了时间，请我喝杯咖啡。',
+  abAbout: '关于',
+  abPrivacy: '隐私',
+  abFtc: 'phtbyte.com 是 Amazon Services LLC Associates Program（亚马逊联盟广告计划）的参与者。作为亚马逊联盟成员，我可从符合条件的购买中获得收入。本页不显示价格——请在 Amazon 上查看当前价格。',
+
   // 材质预设标签（PRESETS 的 key）
   preset_matte: '哑光',
   preset_metal: '金属',
@@ -196,6 +210,20 @@ const en: Record<string, string> = {
   errExportFail: 'Export failed; lower the export resolution or re-upload the photo and retry',
   downloadName: 'Sign_Effect_{{s}}x.{{ext}}',
 
+  // Affiliate banner (AffiliateBanner)
+  abToggle: 'Recommended gear & support',
+  abGearTitle: 'Gear we recommend',
+  abGearSub: 'Hardware that helps you build signs & 3D previews. Affiliate links — no extra cost to you.',
+  abOnAmazon: 'on Amazon ↗',
+  abProdPrinter: '3D Printer',
+  abProdMonitor: '4K Monitor',
+  abProdTablet: 'Graphics Tablet',
+  abSupportTitle: 'Support this tool',
+  abSupportSub: 'Sign Renderer is free to use. If it saved you time, buy me a coffee.',
+  abAbout: 'About',
+  abPrivacy: 'Privacy',
+  abFtc: 'phtbyte.com is a participant in the Amazon Services LLC Associates Program, an affiliate advertising program. As an Amazon Associate I earn from qualifying purchases. Prices are not shown — check the current price on Amazon.',
+
   preset_matte: 'Matte',
   preset_metal: 'Metal',
   preset_acrylic: 'Acrylic',
@@ -215,8 +243,8 @@ const STORAGE_KEY = 'sign-renderer-lang'
 export function detectLang(): Lang {
   const stored = localStorage.getItem(STORAGE_KEY) as Lang | null
   if (stored === 'zh' || stored === 'en') return stored
-  const nav = (navigator.language || 'zh').toLowerCase()
-  return nav.startsWith('zh') ? 'zh' : 'en'
+  // 默认英文（面向海外投放）。不再按浏览器语言自动判定，避免中文系统下默认回中文。
+  return 'en'
 }
 
 function storeLang(l: Lang) {
