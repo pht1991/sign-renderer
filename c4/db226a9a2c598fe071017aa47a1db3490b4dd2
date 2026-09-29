@@ -1,0 +1,75 @@
+src/App.tsx
+  s_7d974edcfaaa30::t_cd00004f29e453 1654-1655
+  s_7d974edcfaaa30::t_eff776f09a6fe3 1669
+  s_7d974edcfaaa30::t_738a401493b383 1050
+  s_7d974edcfaaa30::t_f644509a7f3b88 781
+  s_7d974edcfaaa30::t_65b70153edf6ff 1586
+  s_7d974edcfaaa30::t_d50ac584c06bc7 1733,1735,1741
+  s_7d974edcfaaa30::t_0003f1e2f5c881 305-312
+  s_7d974edcfaaa30::t_3a96d5cf87637d 1080,1084
+  s_7d974edcfaaa30::t_304c23f319732e 1523
+  s_7d974edcfaaa30::t_39a06f25ab1677 1629
+  s_7d974edcfaaa30::t_0b18769f1b3b64 1715
+  s_7d974edcfaaa30::t_8377e04c23faf0 1753
+  s_7d974edcfaaa30::t_ef178a1c07d065 1269-1280
+  s_7d974edcfaaa30::t_33e373e8d733ba 1509
+  s_7d974edcfaaa30::t_e8e7598fd02816 1543-1544,1546,1552
+  s_7d974edcfaaa30::t_de195431371ff9 1179
+  s_7d974edcfaaa30::t_f3a0030bfaf97f 1263
+  s_7d974edcfaaa30::t_686f913045fcad 181,194
+  s_7d974edcfaaa30::t_f2bc04574eec7f 1320
+  s_7d974edcfaaa30::t_5a44b382356e26 1557
+  s_7d974edcfaaa30::t_1e3131dc430c48 1503
+  s_7d974edcfaaa30::t_dd01161ad29c43 1685
+  s_7d974edcfaaa30::t_05574e28066750 1336
+  s_7d974edcfaaa30::t_02def75a3565f9 1445,1448,1456,1462,1468,1471,1477,1481,1488
+  s_7d974edcfaaa30::t_c360fbbc7ac4b6 1758,1764-1766,1770,1776-1778,1786,1788-1789
+  s_7d974edcfaaa30::t_0d445358ba18bc 5
+  s_7d974edcfaaa30::t_9fe754d7cb2029 1439
+  s_7d974edcfaaa30::t_f726b01a60be95 1572
+  s_7d974edcfaaa30::t_48ae4b3ff1583d 1168
+  s_7d974edcfaaa30::t_c4916b7a3161cb 1383,1385,1394,1396-1397,1399,1405
+  s_7d974edcfaaa30::t_0b499434a29ba2 1293-1294,1296
+  s_7d974edcfaaa30::t_f448d923276445 1593-1594,1596,1610
+  s_7d974edcfaaa30::t_9e037f5b575c27 1799,1806,1809
+  s_7d974edcfaaa30::t_f4cf664275f285 1196,1200
+  s_7d974edcfaaa30::t_d486b389ec24dd 1429
+  s_7d974edcfaaa30::t_422ff2e246f742 1682-1683
+  s_7d974edcfaaa30::t_b6d30561e6a034 1700
+  s_7d974edcfaaa30::t_68cbbbd428289d 649-650
+  s_7d974edcfaaa30::t_986ad59b60f8c7 630
+  s_7d974edcfaaa30::t_0261c2e346551c 1538
+  s_7d974edcfaaa30::t_2b78ddd37247ff 1674
+  s_7d974edcfaaa30::t_a21bf6567715d3 1411,1414
+  s_7d974edcfaaa30::t_e43064f5525bdb 1102
+  s_7d974edcfaaa30::t_675b72538fdd02 39,44,47,52,56
+src/App.css
+  s_7d974edcfaaa30::t_44f4658037ed14 36-62
+src/i18n.tsx
+  s_7d974edcfaaa30::t_f013879933c7fa 96
+  s_7d974edcfaaa30::t_5f5961a3a6cdaf 192
+  s_7d974edcfaaa30::t_534e66f803f7d9 97-101
+  s_7d974edcfaaa30::t_e619fde55d5222 193-197
+  s_7d974edcfaaa30::t_6cb9d73c12ffb2 1-95,102-191,198-270
+src/main.tsx
+  s_7d974edcfaaa30::t_df6c42766592f5 4,9-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.33",
+  "base_commit_sha": "c4db226a9a2c598fe071017aa47a1db3490b4dd2",
+  "prompts": {},
+  "sessions": {
+    "s_7d974edcfaaa30": {
+      "agent_id": {
+        "tool": "workbuddy",
+        "id": "fa0f921f-1ac0-41d0-9541-a6db41123698",
+        "model": "hy3-x"
+      },
+      "human_author": "panhaitao-9ap2u <panhaitao@sdpjw.com>",
+      "custom_attributes": {
+        "internal_commit_event_allowlist": "codeup.aliyun.com,codeup-*"
+      }
+    }
+  }
+}
