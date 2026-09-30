@@ -1,0 +1,28 @@
+public/about.html
+  s_2421242316b263::t_c5cef305a95d16 6-7
+public/privacy.html
+  s_2421242316b263::t_a1f3450c6b9821 6-7
+index.html
+  s_2421242316b263::t_28c1f101b9441b 7-8
+public/favicon.svg
+  s_2421242316b263::t_1ef3bf6f35ff5d 1-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.33",
+  "base_commit_sha": "d79d8265537006a72d0cd2577a0a8099311ebd6d",
+  "prompts": {},
+  "sessions": {
+    "s_2421242316b263": {
+      "agent_id": {
+        "tool": "workbuddy",
+        "id": "00aab39a-69ad-452b-9fd5-60d74b193a0a",
+        "model": "hy3-x"
+      },
+      "human_author": "panhaitao-9ap2u <panhaitao@sdpjw.com>",
+      "custom_attributes": {
+        "internal_commit_event_allowlist": "codeup.aliyun.com,codeup-*"
+      }
+    }
+  }
+}
