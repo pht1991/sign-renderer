@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+<title>About — Sign Renderer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f1115; color: #e0e0e0; line-height: 1.6; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 48px 24px 80px; }
+  h1 { font-size: 28px; color: #fff; margin-bottom: 8px; }
+  h2 { font-size: 18px; color: #8b92a5; text-transform: uppercase; letter-spacing: 0.5px; margin: 36px 0 12px; }
+  p { color: #c7ccd6; margin-bottom: 12px; }
+  a { color: #60a5fa; }
+  .back { display: inline-block; margin-top: 24px; color: #60a5fa; text-decoration: none; }
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 10px 16px; background: #1a1d24; border: 1px solid #2a2e38; border-radius: 8px; color: #e0e0e0; text-decoration: none; font-size: 14px; }
+  .chip:hover { border-color: #3b82f6; }
+  .chip span { color: #6b7280; font-size: 12px; }
+  .btn { display: inline-block; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-size: 14px; margin-right: 10px; }
+  .kofi { background: #29abe0; color: #fff; }
+  .disabled { pointer-events: none; opacity: 0.55; cursor: not-allowed; }
+  .ftc { margin-top: 36px; padding-top: 16px; border-top: 1px solid #2a2e38; font-size: 12px; color: #6b7280; }
+  code { background: #15181f; padding: 2px 6px; border-radius: 4px; color: #93c5fd; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>About Sign Renderer</h1>
+  <p>Sign Renderer is a free, browser-based tool that previews how an advertising sign (SVG or image) will look mounted on a real building facade — with 3D extrusion, perspective, curved-surface fitting, and realistic contact shadows.</p>
+
+  <h2>What it does</h2>
+  <p>Upload a facade photo and your sign, drag four corner points to align, then tune depth, material, lighting, and curvature. Export a photorealistic mockup in PNG / JPG / WebP.</p>
+
+  <h2>Technology</h2>
+  <p>Built as a single-page app with <code>React</code> + <code>Vite</code>, 3D rendering via <code>Three.js</code>. No install, no account — everything runs in your browser.</p>
+
+  <h2>Gear we recommend</h2>
+  <p>Affiliate links (Amazon US, tag <code>phtbyte-20</code>). No extra cost to you; I earn a small commission on qualifying purchases.</p>
+  <div class="chips">
+    <a class="chip" href="https://www.amazon.com/s?k=3d+printer&tag=phtbyte-20" target="_blank" rel="sponsored noopener">3D Printer <span>on Amazon ↗</span></a>
+    <a class="chip" href="https://www.amazon.com/s?k=4k+monitor&tag=phtbyte-20" target="_blank" rel="sponsored noopener">4K Monitor <span>on Amazon ↗</span></a>
+    <a class="chip" href="https://www.amazon.com/s?k=graphics+tablet&tag=phtbyte-20" target="_blank" rel="sponsored noopener">Graphics Tablet <span>on Amazon ↗</span></a>
+  </div>
+
+  <h2>Support this tool</h2>
+  <p>If Sign Renderer saved you time, consider supporting its development:</p>
+  <p>
+    <!-- KOFI_DISABLED: re-enable after PayPal/Ko-fi setup by restoring href="https://ko-fi.com/haitaopan" and removing class "disabled" -->
+    <a class="btn kofi disabled" aria-disabled="true" title="Donation setup in progress" rel="noopener">☕ Ko-fi</a>
+  </p>
+
+  <a class="back" href="./">← Back to Sign Renderer</a>
+
+  <p class="ftc">phtbyte.com is a participant in the Amazon Services LLC Associates Program, an affiliate advertising program. As an Amazon Associate I earn from qualifying purchases. Prices are not shown — check the current price on Amazon.</p>
+</div>
+</body>
+</html>
