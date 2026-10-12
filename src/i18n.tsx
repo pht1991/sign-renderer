@@ -123,7 +123,7 @@ const zh: Record<string, string> = {
 }
 
 const en: Record<string, string> = {
-  title: 'Sign Installation Effect Generator',
+  title: '3D Storefront Sign Preview Tool — Sign Renderer',
   uploadPhotoTitle: 'Upload building facade photo',
   dragPhotoHint: 'Or drag & drop the photo here',
   choosePhoto: 'Choose Photo',
